@@ -1,4 +1,5 @@
 import { app, BrowserWindow } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import dotenv from 'dotenv';
@@ -19,7 +20,17 @@ import { BarcodeScannerService } from './main/scanner/barcode-scanner-service';
 import { IPC_CHANNELS } from './shared/ipc-channels';
 import type { ScannerReading } from './shared/scanner';
 
-dotenv.config();
+function loadRuntimeEnv() {
+  const userDataPath = app.getPath('userData');
+  const runtimeEnvPath = path.join(userDataPath, 'config.env');
+
+  if (fs.existsSync(runtimeEnvPath)) {
+    dotenv.config({ path: runtimeEnvPath });
+    return;
+  }
+
+  dotenv.config();
+}
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -59,6 +70,7 @@ const createWindow = () => {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.on('ready', () => {
+  loadRuntimeEnv();
   applyOpenTabsLocalMigrations(app.getPath('userData'));
   const ordersRepository = new OrdersRepository(app.getPath('userData'));
   const catalogRepository = new CatalogRepository(app.getPath('userData'));
