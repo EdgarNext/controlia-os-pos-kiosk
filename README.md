@@ -1,0 +1,1 @@
+# controlia-os-pos-kiosk
