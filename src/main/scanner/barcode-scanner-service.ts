@@ -17,7 +17,7 @@ export class BarcodeScannerService {
 
   start(): void {
     this.stopped = false;
-    this.connect();
+    void this.connect();
   }
 
   stop(): void {
@@ -36,10 +36,10 @@ export class BarcodeScannerService {
     }
   }
 
-  private connect(): void {
+  private async connect(): Promise<void> {
     if (this.stopped || this.port) return;
 
-    const path = this.pickPortPath();
+    const path = await this.pickPortPath();
     if (!path) {
       this.scheduleReconnect();
       return;
@@ -84,15 +84,53 @@ export class BarcodeScannerService {
     });
   }
 
-  private pickPortPath(): string | null {
+  private async pickPortPath(): Promise<string | null> {
     try {
-      const match = fs
+      if (process.platform === 'win32') {
+        const ports = await SerialPort.list();
+        const candidates = ports
+          .filter((port) => {
+            const path = (port.path || '').toUpperCase();
+            if (!/^COM\d+$/.test(path)) return false;
+            const metadata = [
+              port.manufacturer,
+              port.friendlyName,
+              port.pnpId,
+            ]
+              .filter(Boolean)
+              .join(' ')
+              .toLowerCase();
+            const looksLikeUsbSerial =
+              Boolean(port.vendorId && port.productId) ||
+              /(usb|cdc|ch340|ftdi|cp210|silicon labs|prolific)/.test(metadata);
+            return looksLikeUsbSerial;
+          })
+          .map((port) => port.path)
+          .filter(Boolean)
+          .sort((a, b) => {
+            const aNum = Number.parseInt(a.replace(/^COM/i, ''), 10);
+            const bNum = Number.parseInt(b.replace(/^COM/i, ''), 10);
+            return aNum - bNum;
+          });
+
+        return candidates[0] || null;
+      }
+
+      const devMatch = fs
         .readdirSync('/dev')
-        .filter((entry) => entry.startsWith('ttyACM'))
+        .filter((entry) => entry.startsWith('ttyACM') || entry.startsWith('ttyUSB'))
         .sort();
 
-      if (!match.length) return null;
-      return `/dev/${match[0]}`;
+      if (devMatch.length) return `/dev/${devMatch[0]}`;
+
+      const ports = await SerialPort.list();
+      const listedDev = ports
+        .map((port) => port.path)
+        .filter((path): path is string => Boolean(path))
+        .filter((path) => path.startsWith('/dev/ttyACM') || path.startsWith('/dev/ttyUSB'))
+        .sort();
+
+      return listedDev[0] || null;
     } catch {
       return null;
     }
@@ -102,7 +140,7 @@ export class BarcodeScannerService {
     if (this.stopped || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.connect();
+      void this.connect();
     }, RECONNECT_DELAY_MS);
   }
 
@@ -118,4 +156,3 @@ export class BarcodeScannerService {
     this.flushTimer = null;
   }
 }
-
