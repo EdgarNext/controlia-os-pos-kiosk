@@ -15,7 +15,12 @@ import type {
   ReprintOrderResult,
   RuntimeConfig,
 } from './orders';
-import type { ScannerReading } from './scanner';
+import type {
+  HidScannerSettings,
+  ScanCaptureDebugState,
+  ScanContext,
+  ScannerReading,
+} from './scanner';
 import type {
   AddTabItemInput,
   CloseTabPaidInput,
@@ -53,8 +58,10 @@ export interface PosKioskElectronApi {
   listOrderHistory(limit?: number): Promise<OrderHistoryRecord[]>;
   reprintOrder(orderId: string): Promise<ReprintOrderResult>;
   cancelOrder(orderId: string): Promise<CancelOrderResult>;
-  syncOutbox(): Promise<OutboxSyncResult>;
+  syncOutbox(mode?: 'manual' | 'auto' | 'sale'): Promise<OutboxSyncResult>;
   getSyncStatus(): Promise<OutboxSyncStatus>;
+  onOutboxStatus(listener: (status: OutboxSyncStatus) => void): () => void;
+  getDebugState(): Promise<{ events: Array<{ ts: string; event: string; data?: Record<string, unknown> }>; status: OutboxSyncStatus }>;
   getOpenTabsSnapshot(eventId?: string | null): Promise<OpenTabsSnapshot>;
   getOpenTabDetail(tabId: string): Promise<TabDetailView>;
   configureOpenTabsTables(input: ConfigureOpenTabsTablesInput): Promise<ConfigureOpenTabsTablesResult>;
@@ -77,4 +84,12 @@ export interface PosKioskElectronApi {
   getRuntimeConfig(): Promise<RuntimeConfig>;
   setRuntimeConfig(input: Partial<RuntimeConfig>): Promise<RuntimeConfig>;
   onScannerData(listener: (reading: ScannerReading) => void): () => void;
+}
+
+export interface PosScannerElectronApi {
+  onScan(listener: (reading: ScannerReading) => void): () => void;
+  setContext(context: Partial<ScanContext>): Promise<ScanContext>;
+  setEnabled(enabled: boolean): Promise<ScanContext>;
+  setSettings(input: Partial<HidScannerSettings>): Promise<HidScannerSettings>;
+  getDebugState(): Promise<ScanCaptureDebugState>;
 }

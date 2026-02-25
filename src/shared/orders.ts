@@ -1,3 +1,5 @@
+import type { ScannerMode } from './scanner';
+
 export interface SaleLineInput {
   catalogItemId: string;
   name: string;
@@ -17,7 +19,7 @@ export interface CreateSaleResult {
   folioText?: string;
   totalCents?: number;
   cambioCents?: number;
-  printStatus?: 'SENT' | 'FAILED';
+  printStatus?: 'QUEUED' | 'SENT' | 'FAILED';
   error?: string;
 }
 
@@ -44,6 +46,11 @@ export interface OutboxSyncStatus {
   pendingLegacy: number;
   pendingTabs: number;
   pendingTotal: number;
+  phase?: 'idle' | 'syncing' | 'retrying' | 'error' | 'ok';
+  lastOkAt?: string | null;
+  lastErrorShort?: string;
+  autoInFlight?: boolean;
+  manualInFlight?: boolean;
 }
 
 export type OrderStatus = 'OPEN' | 'PAID' | 'CANCELED';
@@ -85,4 +92,12 @@ export interface RuntimeConfig {
   tenantSlug: string | null;
   deviceId: string | null;
   deviceSecret: string | null;
+  scannerMode: ScannerMode;
+  scannerMinCodeLen: number | null;
+  scannerMaxCodeLen: number | null;
+  scannerMaxInterKeyMsScan: number | null;
+  scannerScanEndGapMs: number | null;
+  scannerHumanKeyGapMs: number | null;
+  scannerAllowEnterTerminator: boolean | null;
+  scannerAllowedCharsPattern: string | null;
 }

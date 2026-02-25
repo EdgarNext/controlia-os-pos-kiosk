@@ -20,7 +20,7 @@ const config: ForgeConfig = {
   makers: [
     new MakerSquirrel({}),
     new MakerZIP({}, ['darwin']),
-    //new MakerRpm({}),
+    new MakerRpm({}),
     new MakerDeb({}),
   ],
   plugins: [
@@ -39,6 +39,11 @@ const config: ForgeConfig = {
           entry: 'src/preload.ts',
           config: 'vite.preload.config.ts',
           target: 'preload',
+        },
+        {
+          entry: 'src/main/sync/sync-worker.ts',
+          config: 'vite.main.config.ts',
+          target: 'main',
         },
       ],
       renderer: [

@@ -40,3 +40,32 @@ ELECTRON_OPEN_DEVTOOLS=0
 
 - Do not ship secrets inside the packaged app.
 - Operators can update `config.env` without rebuilding the installer.
+
+## HID scanner mode (keyboard wedge)
+
+The POS uses HID scanner capture (keyboard wedge) via Electron `before-input-event`.
+
+### HID behavior
+
+- Does not require focus on any input field.
+- Does not require pressing Enter.
+- If scanner sends Enter, it is accepted as terminator when enabled.
+- If scanner does not send Enter, scan finishes on silence gap timeout.
+- Uses timing heuristics to distinguish human typing vs scanner bursts.
+
+### Scanner settings (Ajustes UI)
+
+- `Minimo caracteres`
+- `Maximo caracteres`
+- `Max interkey scan (ms)`
+- `Gap fin scan (ms)`
+- `Gap humano (ms)`
+- `Pattern caracteres permitidos`
+- `Enter termina scan` (`Si`/`No`)
+
+### Troubleshooting checklist
+
+- If scan text appears in inputs, increase `Gap fin scan` and ensure sensitive fields use `data-scan-capture=\"off\"`.
+- If scans are not detected, increase `Max interkey scan (ms)` and/or `Gap fin scan (ms)`.
+- If manual typing is detected as scan, increase `Minimo caracteres` and reduce `Max interkey scan (ms)`.
+- Open `Scanner debug` (or shortcut `Ctrl+Alt+D`) to inspect recent scans and logs.

@@ -38,11 +38,14 @@ import type {
 import { OrdersRepository } from '../orders/orders-repository';
 import { SalesService } from '../orders/sales-service';
 import { OpenTabsAppService } from '../sales-pos/open-tabs-app-service';
+import type { SyncCoordinator } from '../sync/sync-coordinator';
+import type { SyncRequestMode } from '../sync/types';
 
 export function registerSalesHandlers(
   ordersRepository: OrdersRepository,
   salesService: SalesService,
   openTabsAppService: OpenTabsAppService,
+  syncCoordinator: SyncCoordinator,
 ): void {
   const createSaleHandler = async (_event: unknown, input: CreateSaleInput): Promise<CreateSaleResult> => {
     return salesService.createSaleAndPrint(input);
@@ -68,46 +71,16 @@ export function registerSalesHandlers(
     return salesService.cancelOrder(orderId);
   });
 
-  ipcMain.handle(IPC_CHANNELS.OUTBOX_SYNC, async (): Promise<OutboxSyncResult> => {
-    const tabs = await openTabsAppService.syncMutations(200);
-
-    const processed = tabs.processed;
-    const sent = tabs.acked;
-    const failed = tabs.failed + tabs.conflicts;
-    const pendingLegacy = 0;
-    const pendingTabs = tabs.pending;
-    const pending = pendingLegacy + pendingTabs;
-    const ok = tabs.ok;
-    const error = tabs.error;
-
-    return {
-      ok,
-      processed,
-      sent,
-      failed,
-      pending,
-      processedLegacy: 0,
-      sentLegacy: 0,
-      failedLegacy: 0,
-      pendingLegacy,
-      processedTabs: tabs.processed,
-      sentTabs: tabs.acked,
-      failedTabs: tabs.failed,
-      conflictsTabs: tabs.conflicts,
-      pendingTabs,
-      lastSyncedAt: new Date().toISOString(),
-      error,
-    };
+  ipcMain.handle(IPC_CHANNELS.OUTBOX_SYNC, async (_event, mode?: SyncRequestMode): Promise<OutboxSyncResult> => {
+    return syncCoordinator.requestSync(mode || 'manual');
   });
 
   ipcMain.handle(IPC_CHANNELS.OUTBOX_SYNC_STATUS, async (): Promise<OutboxSyncStatus> => {
-    const pendingLegacy = 0;
-    const pendingTabs = openTabsAppService.countPendingMutations();
-    return {
-      pendingLegacy,
-      pendingTabs,
-      pendingTotal: pendingLegacy + pendingTabs,
-    };
+    return syncCoordinator.getStatus();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.DEBUG_GET_STATE, async () => {
+    return syncCoordinator.getDebugState();
   });
 
   ipcMain.handle(IPC_CHANNELS.OPEN_TABS_SNAPSHOT, async (_event, eventId?: string | null): Promise<OpenTabsSnapshot> => {

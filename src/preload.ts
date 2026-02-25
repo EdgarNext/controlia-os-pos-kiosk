@@ -1,8 +1,8 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import { IPC_CHANNELS } from './shared/ipc-channels';
-import type { PosKioskElectronApi } from './shared/electron-api';
+import type { PosKioskElectronApi, PosScannerElectronApi } from './shared/electron-api';
 import type { PrintV2Request } from './shared/print-v2';
-import type { ScannerReading } from './shared/scanner';
+import type { HidScannerSettings, ScanCaptureDebugState, ScanContext, ScannerReading } from './shared/scanner';
 
 const api: PosKioskElectronApi = {
   printV2(request: PrintV2Request) {
@@ -38,11 +38,23 @@ const api: PosKioskElectronApi = {
   cancelOrder(orderId: string) {
     return ipcRenderer.invoke(IPC_CHANNELS.ORDER_CANCEL, orderId);
   },
-  syncOutbox() {
-    return ipcRenderer.invoke(IPC_CHANNELS.OUTBOX_SYNC);
+  syncOutbox(mode?: 'manual' | 'auto' | 'sale') {
+    return ipcRenderer.invoke(IPC_CHANNELS.OUTBOX_SYNC, mode || 'manual');
   },
   getSyncStatus() {
     return ipcRenderer.invoke(IPC_CHANNELS.OUTBOX_SYNC_STATUS);
+  },
+  onOutboxStatus(listener) {
+    const wrapped = (_event: IpcRendererEvent, status: unknown) => {
+      listener(status as Parameters<typeof listener>[0]);
+    };
+    ipcRenderer.on(IPC_CHANNELS.OUTBOX_STATUS_EVENT, wrapped);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.OUTBOX_STATUS_EVENT, wrapped);
+    };
+  },
+  getDebugState() {
+    return ipcRenderer.invoke(IPC_CHANNELS.DEBUG_GET_STATE);
   },
   getOpenTabsSnapshot(eventId?: string | null) {
     return ipcRenderer.invoke(IPC_CHANNELS.OPEN_TABS_SNAPSHOT, eventId ?? null);
@@ -118,4 +130,29 @@ const api: PosKioskElectronApi = {
   },
 };
 
+const scannerApi: PosScannerElectronApi = {
+  onScan(listener: (reading: ScannerReading) => void) {
+    const wrapped = (_event: IpcRendererEvent, reading: ScannerReading) => {
+      listener(reading);
+    };
+    ipcRenderer.on(IPC_CHANNELS.SCAN_CAPTURE_DATA, wrapped);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.SCAN_CAPTURE_DATA, wrapped);
+    };
+  },
+  setContext(context: Partial<ScanContext>) {
+    return ipcRenderer.invoke(IPC_CHANNELS.SCAN_CAPTURE_SET_CONTEXT, context);
+  },
+  setEnabled(enabled: boolean) {
+    return ipcRenderer.invoke(IPC_CHANNELS.SCAN_CAPTURE_SET_ENABLED, enabled);
+  },
+  setSettings(input: Partial<HidScannerSettings>) {
+    return ipcRenderer.invoke(IPC_CHANNELS.SCAN_CAPTURE_SET_SETTINGS, input);
+  },
+  getDebugState(): Promise<ScanCaptureDebugState> {
+    return ipcRenderer.invoke(IPC_CHANNELS.SCAN_CAPTURE_GET_DEBUG_STATE);
+  },
+};
+
 contextBridge.exposeInMainWorld('posKiosk', api);
+contextBridge.exposeInMainWorld('posScanner', scannerApi);

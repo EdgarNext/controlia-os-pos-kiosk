@@ -2,12 +2,39 @@ import './index.css';
 import type { CatalogCategory, CatalogItem, CatalogSnapshot } from './shared/catalog';
 import type { OrderHistoryRecord, RuntimeConfig } from './shared/orders';
 import type { PrintConfig, PrintJobRecord } from './shared/print-v2';
-import type { ScannerReading } from './shared/scanner';
+import type {
+  HidScannerSettings,
+  ScanCaptureDebugState,
+  ScanContextMode,
+  ScannerReading,
+} from './shared/scanner';
 import type { OpenTabsSnapshot, TabDetailView } from './shared/open-tabs';
 
 interface CartLine {
   item: CatalogItem;
   qty: number;
+}
+
+type StatusBarPhase = 'idle' | 'working' | 'ok' | 'warn' | 'error';
+
+interface UiRefs {
+  initialized: boolean;
+  topbarSubtitle: HTMLElement | null;
+  headerActions: HTMLElement | null;
+  categoriesRegion: HTMLElement | null;
+  productsRegion: HTMLElement | null;
+  cartRegion: HTMLElement | null;
+  modalsRegion: HTMLElement | null;
+  bottomStatusRegion: HTMLElement | null;
+}
+
+interface RenderRuntime {
+  scheduled: boolean;
+  frameId: number | null;
+  reasons: Set<string>;
+  regionSignature: Record<'header' | 'categories' | 'products' | 'cart' | 'modals' | 'statusbar', string>;
+  metricsEnabled: boolean;
+  metrics: Record<'header' | 'categories' | 'products' | 'cart' | 'modals' | 'statusbar', { count: number; totalMs: number }>;
 }
 
 const app = document.getElementById('app');
@@ -54,7 +81,12 @@ const state = {
   busy: false,
   status: 'Listo.' as string,
   statusKind: 'info' as 'info' | 'success' | 'error',
-  scannerReading: null as ScannerReading | null,
+  scanCaptureEnabled: true,
+  scanCaptureMode: 'sale' as ScanContextMode,
+  scanCaptureSensitiveFocusCount: 0,
+  scannerDebugOpen: false,
+  scannerDebugState: null as ScanCaptureDebugState | null,
+  scannerDebugLoading: false,
   openTabsOpen: false,
   openTabsLoading: false,
   openTabsBusy: false,
@@ -91,10 +123,92 @@ const state = {
   syncPendingTotal: 0,
   syncLastAt: null as string | null,
   syncLastError: '' as string,
-  syncAutoTimer: null as ReturnType<typeof setTimeout> | null,
-  syncAutoBackoffMs: 15000,
-  syncInFlight: false,
+  manualSync: {
+    inFlight: false,
+    lastError: '' as string,
+    lastResultAt: null as string | null,
+  },
+  autoSync: {
+    phase: 'idle' as 'idle' | 'syncing' | 'retrying' | 'error' | 'ok',
+    pendingTotal: 0,
+    lastOkAt: null as string | null,
+    lastErrorShort: '' as string,
+  },
+  statusBar: {
+    sync: {
+      phase: 'idle' as StatusBarPhase,
+      pendingTotal: 0,
+      lastOkAt: null as string | null,
+      lastErrorShort: '' as string,
+    },
+    scanner: {
+      phase: 'ok' as StatusBarPhase,
+      lastCode: '' as string,
+      lastAt: null as string | null,
+    },
+    print: {
+      phase: 'idle' as StatusBarPhase,
+      lastErrorShort: '' as string,
+    },
+    runtime: {
+      modeMesa: false,
+      kioskLabel: '' as string,
+      folioHint: '' as string,
+    },
+  },
 };
+
+const ui: UiRefs = {
+  initialized: false,
+  topbarSubtitle: null,
+  headerActions: null,
+  categoriesRegion: null,
+  productsRegion: null,
+  cartRegion: null,
+  modalsRegion: null,
+  bottomStatusRegion: null,
+};
+
+const renderRuntime: RenderRuntime = {
+  scheduled: false,
+  frameId: null,
+  reasons: new Set<string>(),
+  regionSignature: {
+    header: '',
+    categories: '',
+    products: '',
+    cart: '',
+    modals: '',
+    statusbar: '',
+  },
+  metricsEnabled: false,
+  metrics: {
+    header: { count: 0, totalMs: 0 },
+    categories: { count: 0, totalMs: 0 },
+    products: { count: 0, totalMs: 0 },
+    cart: { count: 0, totalMs: 0 },
+    modals: { count: 0, totalMs: 0 },
+    statusbar: { count: 0, totalMs: 0 },
+  },
+};
+
+const derivedCache = {
+  visibleItemsKey: '',
+  visibleItems: [] as CatalogItem[],
+  barcodeBindingKey: '',
+  barcodeBindingItems: [] as CatalogItem[],
+  cartLinesKey: '',
+  cartLines: [] as CartLine[],
+};
+
+function resetDerivedCache(): void {
+  derivedCache.visibleItemsKey = '';
+  derivedCache.visibleItems = [];
+  derivedCache.barcodeBindingKey = '';
+  derivedCache.barcodeBindingItems = [];
+  derivedCache.cartLinesKey = '';
+  derivedCache.cartLines = [];
+}
 
 function formatMoney(cents: number): string {
   return new Intl.NumberFormat('es-MX', {
@@ -113,10 +227,108 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#039;');
 }
 
+function queueRender(reason = 'state-change'): void {
+  renderRuntime.reasons.add(reason);
+  if (renderRuntime.scheduled) return;
+  renderRuntime.scheduled = true;
+  renderRuntime.frameId = requestAnimationFrame(() => {
+    renderRuntime.scheduled = false;
+    renderRuntime.frameId = null;
+    flushRender();
+    renderRuntime.reasons.clear();
+  });
+}
+
+function renderRegion(name: keyof RenderRuntime['metrics'], fn: () => void): void {
+  if (!renderRuntime.metricsEnabled) {
+    fn();
+    return;
+  }
+  const t0 = performance.now();
+  fn();
+  const elapsed = performance.now() - t0;
+  renderRuntime.metrics[name].count += 1;
+  renderRuntime.metrics[name].totalMs += elapsed;
+}
+
 function setStatus(message: string, kind: 'info' | 'success' | 'error' = 'info'): void {
   state.status = message;
   state.statusKind = kind;
+  queueRender('status-update');
+}
+
+function getScanModeByUiState(): ScanContextMode {
+  if (state.barcodeBindingOpen) return 'assign';
+  if (state.settingsOpen || state.ordersHistoryOpen || state.tabKitchenHistoryOpen || state.checkoutOpen) return 'disabled';
+  return 'sale';
+}
+
+function resolveRuntimeConfigDefaults(): RuntimeConfig {
+  return {
+    tenantId: null,
+    kioskId: null,
+    kioskNumber: null,
+    tenantSlug: null,
+    deviceId: null,
+    deviceSecret: null,
+    scannerMode: 'hid',
+    scannerMinCodeLen: 6,
+    scannerMaxCodeLen: 64,
+    scannerMaxInterKeyMsScan: 35,
+    scannerScanEndGapMs: 80,
+    scannerHumanKeyGapMs: 100,
+    scannerAllowEnterTerminator: true,
+    scannerAllowedCharsPattern: '[0-9A-Za-z\\-_.]',
+  };
+}
+
+function runtimeScannerSettingsToInput(runtime: RuntimeConfig | null): Partial<HidScannerSettings> {
+  if (!runtime) return {};
+  return {
+    minCodeLen: runtime.scannerMinCodeLen ?? undefined,
+    maxCodeLen: runtime.scannerMaxCodeLen ?? undefined,
+    maxInterKeyMsScan: runtime.scannerMaxInterKeyMsScan ?? undefined,
+    scanEndGapMs: runtime.scannerScanEndGapMs ?? undefined,
+    humanKeyGapMs: runtime.scannerHumanKeyGapMs ?? undefined,
+    allowEnterTerminator: runtime.scannerAllowEnterTerminator ?? undefined,
+    allowedCharsPattern: runtime.scannerAllowedCharsPattern ?? undefined,
+  };
+}
+
+async function applyScanContext(): Promise<void> {
+  const mode = getScanModeByUiState();
+  state.scanCaptureMode = mode;
+  const enabled = state.scanCaptureSensitiveFocusCount <= 0 && mode !== 'disabled';
+  state.scanCaptureEnabled = enabled;
+  await window.posScanner.setContext({
+    enabled,
+    mode,
+    selectedProductId: state.barcodeBindingSelectedItemId || null,
+  });
+}
+
+async function refreshScannerDebugState(): Promise<void> {
+  state.scannerDebugLoading = true;
   render();
+  try {
+    state.scannerDebugState = await window.posScanner.getDebugState();
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : 'No se pudo cargar scanner debug.', 'error');
+  } finally {
+    state.scannerDebugLoading = false;
+    render();
+  }
+}
+
+function playScanFeedback(): void {
+  try {
+    const audio = new Audio(
+      'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=',
+    );
+    void audio.play();
+  } catch {
+    // optional best-effort beep
+  }
 }
 
 function getCategories(): CatalogCategory[] {
@@ -134,16 +346,24 @@ function findItemByBarcode(barcodeRaw: string): CatalogItem | null {
 }
 
 function getVisibleItems(): CatalogItem[] {
+  const snapshotKey = `${state.snapshot?.lastSyncedAt || 'na'}:${state.snapshot?.items.length || 0}`;
+  const cacheKey = `${snapshotKey}:${state.activeCategoryId || 'all'}`;
+  if (derivedCache.visibleItemsKey === cacheKey) return derivedCache.visibleItems;
   const items = getItems();
-  if (!state.activeCategoryId) return items;
-  return items.filter((row) => row.categoryId === state.activeCategoryId);
+  const value = !state.activeCategoryId ? items : items.filter((row) => row.categoryId === state.activeCategoryId);
+  derivedCache.visibleItemsKey = cacheKey;
+  derivedCache.visibleItems = value;
+  return value;
 }
 
 function getBarcodeBindingItems(): CatalogItem[] {
   const categoryId = state.barcodeBindingCategoryId;
   const search = state.barcodeBindingSearch.trim().toLowerCase();
+  const snapshotKey = `${state.snapshot?.lastSyncedAt || 'na'}:${state.snapshot?.items.length || 0}`;
+  const cacheKey = `${snapshotKey}:${categoryId}:${search}`;
+  if (derivedCache.barcodeBindingKey === cacheKey) return derivedCache.barcodeBindingItems;
 
-  return getItems().filter((item) => {
+  const value = getItems().filter((item) => {
     const categoryMatch = !categoryId || item.categoryId === categoryId;
     const searchMatch =
       !search ||
@@ -151,16 +371,28 @@ function getBarcodeBindingItems(): CatalogItem[] {
       (item.barcode || '').toLowerCase().includes(search);
     return categoryMatch && searchMatch;
   });
+  derivedCache.barcodeBindingKey = cacheKey;
+  derivedCache.barcodeBindingItems = value;
+  return value;
 }
 
 function getCartLines(): CartLine[] {
+  const snapshotKey = `${state.snapshot?.lastSyncedAt || 'na'}:${state.snapshot?.items.length || 0}`;
+  const cartKey = `${snapshotKey}:${Array.from(state.cartQtyByItemId.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([itemId, qty]) => `${itemId}:${qty}`)
+    .join('|')}`;
+  if (derivedCache.cartLinesKey === cartKey) return derivedCache.cartLines;
   const byId = new Map(getItems().map((item) => [item.id, item]));
   const lines: CartLine[] = [];
   state.cartQtyByItemId.forEach((qty, itemId) => {
     const item = byId.get(itemId);
     if (item && qty > 0) lines.push({ item, qty });
   });
-  return lines.sort((a, b) => a.item.name.localeCompare(b.item.name));
+  const value = lines.sort((a, b) => a.item.name.localeCompare(b.item.name));
+  derivedCache.cartLinesKey = cartKey;
+  derivedCache.cartLines = value;
+  return value;
 }
 
 function getTotalCents(): number {
@@ -232,6 +464,7 @@ function openCheckout(): void {
   state.receivedInput = '';
   state.checkoutPaymentMethod = state.tableModeEnabled ? state.openTabsPaymentMethod : 'efectivo';
   state.enterConfirmArmedAt = null;
+  void applyScanContext();
   render();
 }
 
@@ -240,6 +473,7 @@ function closeCheckout(): void {
   state.checkoutOpen = false;
   state.receivedInput = '';
   state.enterConfirmArmedAt = null;
+  void applyScanContext();
   render();
 }
 
@@ -561,15 +795,144 @@ async function confirmTableSelection(): Promise<void> {
   render();
 }
 
+function initUI(): void {
+  if (ui.initialized) return;
+  app.innerHTML = `
+    <main class="kiosk-shell">
+      <header class="topbar">
+        <div>
+          <h1>Kiosk POS</h1>
+          <p id="topbar-subtitle">Operacion local offline-first.</p>
+        </div>
+        <div class="topbar-right">
+          <div class="topbar-actions" data-region="header-actions"></div>
+        </div>
+      </header>
+
+      <section class="layout">
+        <aside class="panel categories">
+          <h2>Categorias</h2>
+          <div class="stack" data-region="categories"></div>
+        </aside>
+
+        <section class="panel products">
+          <h2>Productos</h2>
+          <div class="products-grid" data-region="products"></div>
+        </section>
+
+        <aside class="panel cart" data-region="cart"></aside>
+      </section>
+
+      <footer class="bottom-status" data-region="statusbar"></footer>
+      <div data-region="modals"></div>
+    </main>
+  `;
+
+  ui.topbarSubtitle = app.querySelector('#topbar-subtitle');
+  ui.headerActions = app.querySelector('[data-region="header-actions"]');
+  ui.categoriesRegion = app.querySelector('[data-region="categories"]');
+  ui.productsRegion = app.querySelector('[data-region="products"]');
+  ui.cartRegion = app.querySelector('[data-region="cart"]');
+  ui.bottomStatusRegion = app.querySelector('[data-region="statusbar"]');
+  ui.modalsRegion = app.querySelector('[data-region="modals"]');
+  ui.initialized = true;
+}
+
+function renderBottomStatusRegion(): void {
+  if (!ui.bottomStatusRegion) return;
+  const sync = state.statusBar.sync;
+  const scanner = state.statusBar.scanner;
+  const print = state.statusBar.print;
+  const runtime = state.statusBar.runtime;
+
+  const syncValue =
+    sync.phase === 'working'
+      ? 'Sync...'
+      : sync.phase === 'warn' && sync.pendingTotal > 0
+        ? `Pend: ${sync.pendingTotal} · reintento`
+        : sync.pendingTotal > 0
+          ? `Pend: ${sync.pendingTotal}`
+          : 'Al dia';
+  const scannerValue =
+    scanner.phase === 'warn'
+      ? 'No encontrado'
+      : scanner.lastCode
+        ? `Ultimo: ${scanner.lastCode}`
+        : 'Scanner listo';
+  const printValue =
+    print.phase === 'working'
+      ? 'Imprimiendo...'
+      : print.phase === 'error'
+        ? 'Fallo impresion'
+        : 'Impresion lista';
+  const runtimeValue = runtime.modeMesa
+    ? `Modo mesa: ON ${runtime.folioHint ? `· ${runtime.folioHint}` : ''}`
+    : `Modo mesa: OFF ${runtime.kioskLabel ? `· ${runtime.kioskLabel}` : ''}`;
+
+  const html = `
+    <div class="status-segment" title="${escapeHtml(sync.lastOkAt ? `Ultimo OK: ${formatDate(sync.lastOkAt)}` : 'Sin sync previa')}">
+      <span class="status-label">Sync</span>
+      <span class="status-value">${escapeHtml(syncValue)}</span>
+    </div>
+    <div class="status-separator"></div>
+    <div class="status-segment" title="${escapeHtml(scanner.lastAt ? `Ultima lectura: ${formatDate(scanner.lastAt)}` : 'Scanner listo')}">
+      <span class="status-label">Scanner</span>
+      <span class="status-value">${escapeHtml(scannerValue)}</span>
+    </div>
+    <div class="status-separator"></div>
+    <div class="status-segment" title="${escapeHtml(print.lastErrorShort || 'Cola de impresion disponible')}">
+      <span class="status-label">Print</span>
+      <span class="status-value">${escapeHtml(printValue)}</span>
+    </div>
+    <div class="status-separator"></div>
+    <button class="status-segment runtime-segment" data-action="toggle-render-metrics" title="Click para togglear metricas de render">
+      <span class="status-label">Runtime</span>
+      <span class="status-value">${escapeHtml(runtimeValue)}</span>
+    </button>
+  `;
+  if (renderRuntime.regionSignature.statusbar === html) return;
+  renderRuntime.regionSignature.statusbar = html;
+  ui.bottomStatusRegion.innerHTML = html;
+}
+
+function updateStatusBarState(): void {
+  state.statusBar.sync.pendingTotal = state.autoSync.pendingTotal;
+  state.statusBar.sync.lastErrorShort = state.autoSync.lastErrorShort;
+  state.statusBar.sync.lastOkAt = state.autoSync.lastOkAt;
+  if (state.autoSync.phase === 'syncing') {
+    state.statusBar.sync.phase = 'working';
+  } else if (state.autoSync.phase === 'retrying' || state.autoSync.phase === 'error') {
+    state.statusBar.sync.phase = 'warn';
+  } else if (state.autoSync.phase === 'ok') {
+    state.statusBar.sync.phase = 'ok';
+  } else {
+    state.statusBar.sync.phase = 'idle';
+  }
+
+  state.statusBar.runtime.modeMesa = state.tableModeEnabled;
+  state.statusBar.runtime.kioskLabel = state.runtimeConfig?.kioskId || '';
+  state.statusBar.runtime.folioHint = state.openTabsDetail?.tab.folioText || '';
+}
+
+// Diagnostico previo:
+// 1) aqui existia re-render global con app.innerHTML del shell completo por cada setState.
+// 2) despues de cada render se re-ataban listeners attachSettingsInputs/attachBarcodeBindingInputs/etc.
+// 3) los estatus operativos de sync estaban en el header superior y en un banner global.
 function render(): void {
+  queueRender('legacy-render-call');
+}
+
+function flushRender(): void {
+  initUI();
   const activeElement = document.activeElement as HTMLElement | null;
-  const shouldRefocusReceivedInput = activeElement?.id === 'input-received';
+  const refocusId = activeElement?.id || '';
+  const shouldRefocusInput = activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement;
   const prevSelectionStart =
-    shouldRefocusReceivedInput && activeElement instanceof HTMLInputElement
+    shouldRefocusInput && activeElement instanceof HTMLInputElement
       ? activeElement.selectionStart
       : null;
   const prevSelectionEnd =
-    shouldRefocusReceivedInput && activeElement instanceof HTMLInputElement
+    shouldRefocusInput && activeElement instanceof HTMLInputElement
       ? activeElement.selectionEnd
       : null;
 
@@ -660,15 +1023,6 @@ function render(): void {
           .join('')
       : '<div class="empty">Agrega productos para iniciar una orden.</div>';
 
-  const statusClass = state.statusKind === 'error' ? 'error' : state.statusKind === 'success' ? 'success' : '';
-  const scannerValue = state.scannerReading?.code || 'Esperando lectura...';
-  const scannerTimestamp = state.scannerReading?.receivedAt
-    ? `Ultimo escaneo: ${formatDate(state.scannerReading.receivedAt)}`
-    : 'Escanea un codigo para validar conectividad.';
-  const scannerClass = state.scannerReading ? 'has-reading' : '';
-  const syncIndicator = `Sync: pendientes ${state.syncPendingTotal} (legacy ${state.syncPendingLegacy} | tabs ${state.syncPendingTabs}) · ultimo ${formatDate(
-    state.syncLastAt,
-  )}${state.syncLastError ? ` · error: ${state.syncLastError}` : ''}`;
   const kitchenRoundsHtml =
     state.openTabsDetail?.kitchenRounds?.length
       ? state.openTabsDetail.kitchenRounds
@@ -740,7 +1094,7 @@ function render(): void {
             <div class="barcode-toolbar">
               <label class="field barcode-search">
                 <span>Filtrar por nombre o etiqueta</span>
-                <input id="binding-search-input" class="input barcode-search-input" value="${escapeHtml(state.barcodeBindingSearch)}" placeholder="Ej: Coca o 75010..." />
+                <input id="binding-search-input" data-scan-capture="off" class="input barcode-search-input" value="${escapeHtml(state.barcodeBindingSearch)}" placeholder="Ej: Coca o 75010..." />
               </label>
             </div>
             <div class="barcode-items-list">${barcodeBindingItemsHtml}</div>
@@ -836,7 +1190,7 @@ function render(): void {
 
         <label class="field">
           <span>Pago recibido</span>
-          <input id="input-received" class="input" inputmode="numeric" value="${escapeHtml(state.receivedInput)}" placeholder="0" ${
+          <input id="input-received" data-scan-capture="off" class="input" inputmode="numeric" value="${escapeHtml(state.receivedInput)}" placeholder="0" ${
             state.checkoutPaymentMethod === 'tarjeta' ? 'disabled' : ''
           } />
         </label>
@@ -869,14 +1223,7 @@ function render(): void {
     : '';
 
   const settingsConfig = state.printConfig || { linuxPrinterName: '', windowsPrinterShare: '' };
-  const runtime = state.runtimeConfig || {
-    tenantId: '',
-    kioskId: '',
-    kioskNumber: null,
-    tenantSlug: '',
-    deviceId: '',
-    deviceSecret: '',
-  };
+  const runtime = state.runtimeConfig || resolveRuntimeConfigDefaults();
 
   const settingsJobsHtml = state.printJobs.length
     ? state.printJobs
@@ -957,6 +1304,46 @@ function render(): void {
             <label class="field">
               <span>Kiosk Number (ventas)</span>
               <input id="settings-kiosk-number" class="input" inputmode="numeric" value="${runtime.kioskNumber ?? ''}" />
+            </label>
+
+            <div class="settings-section-title">Scanner</div>
+
+            <label class="field">
+              <span>Minimo caracteres</span>
+              <input id="settings-scanner-min-len" class="input" inputmode="numeric" value="${runtime.scannerMinCodeLen ?? 6}" />
+            </label>
+
+            <label class="field">
+              <span>Maximo caracteres</span>
+              <input id="settings-scanner-max-len" class="input" inputmode="numeric" value="${runtime.scannerMaxCodeLen ?? 64}" />
+            </label>
+
+            <label class="field">
+              <span>Max interkey scan (ms)</span>
+              <input id="settings-scanner-max-interkey" class="input" inputmode="numeric" value="${runtime.scannerMaxInterKeyMsScan ?? 35}" />
+            </label>
+
+            <label class="field">
+              <span>Gap fin scan (ms)</span>
+              <input id="settings-scanner-end-gap" class="input" inputmode="numeric" value="${runtime.scannerScanEndGapMs ?? 80}" />
+            </label>
+
+            <label class="field">
+              <span>Gap humano (ms)</span>
+              <input id="settings-scanner-human-gap" class="input" inputmode="numeric" value="${runtime.scannerHumanKeyGapMs ?? 100}" />
+            </label>
+
+            <label class="field">
+              <span>Pattern caracteres permitidos</span>
+              <input id="settings-scanner-allowed-pattern" class="input" value="${escapeHtml(runtime.scannerAllowedCharsPattern || '[0-9A-Za-z\\-_.]')}" />
+            </label>
+
+            <label class="field">
+              <span>Enter termina scan</span>
+              <select id="settings-scanner-enter-terminator" class="input">
+                <option value="1" ${runtime.scannerAllowEnterTerminator !== false ? 'selected' : ''}>Si</option>
+                <option value="0" ${runtime.scannerAllowEnterTerminator === false ? 'selected' : ''}>No</option>
+              </select>
             </label>
 
             <div class="settings-actions">
@@ -1333,7 +1720,7 @@ function render(): void {
               </label>
               <label class="field">
                 <span>Notas</span>
-                <input id="open-tabs-notes" class="input" value="${escapeHtml(state.openTabsNotesInput)}" />
+                <input id="open-tabs-notes" data-scan-capture="off" class="input" value="${escapeHtml(state.openTabsNotesInput)}" />
               </label>
               <button class="button" data-action="open-tabs-add-item" ${state.openTabsBusy ? 'disabled' : ''}>Agregar item</button>
               <div class="cart-list">${openTabsLinesHtml}</div>
@@ -1363,291 +1750,205 @@ function render(): void {
   `
     : '';
 
-  app.innerHTML = `
-    <main class="kiosk-shell">
-      <header class="topbar">
-        <div>
-          <h1>Kiosk POS</h1>
-          <p>Ultima sync catalogo: ${formatDate(state.snapshot?.lastSyncedAt)}</p>
-          <p>${escapeHtml(syncIndicator)}</p>
+  const scannerDebugRows = state.scannerDebugState?.recentScans?.length
+    ? state.scannerDebugState.recentScans
+        .slice()
+        .reverse()
+        .map(
+          (reading) => `
+      <tr>
+        <td>${formatDate(reading.receivedAt)}</td>
+        <td>${escapeHtml(reading.code)}</td>
+        <td>${escapeHtml(String(reading.source || 'n/a'))}</td>
+      </tr>
+    `,
+        )
+        .join('')
+    : '<tr><td colspan="3">Sin lecturas recientes.</td></tr>';
+  const scannerDebugLogs = state.scannerDebugState?.logs?.length
+    ? state.scannerDebugState.logs
+        .slice(-25)
+        .map((log) => `${log.ts} [${log.level}] ${log.message} ${log.data ? JSON.stringify(log.data) : ''}`)
+        .join('\\n')
+    : '';
+  const scannerDebugHtml = state.scannerDebugOpen
+    ? `
+    <div class="modal-overlay">
+      <div class="modal history-modal">
+        <div class="settings-header">
+          <h2>Scanner Debug</h2>
+          <div class="settings-inline-status ${state.scannerDebugLoading ? '' : 'success'}">
+            ${
+              state.scannerDebugLoading
+                ? 'Cargando estado...'
+                : `enabled=${state.scannerDebugState?.enabled ? 'true' : 'false'} · mode=${escapeHtml(
+                    state.scannerDebugState?.context.mode || 'disabled',
+                  )} · scanMode=${state.scannerDebugState?.scanModeActive ? 'true' : 'false'}`
+            }
+          </div>
         </div>
-        <div class="topbar-right">
-          <div class="topbar-actions">
-            <button class="button secondary" data-action="open-barcode-binding" ${state.busy ? 'disabled' : ''}>Vincular etiquetas</button>
-            <button class="button secondary" data-action="open-settings" ${state.busy ? 'disabled' : ''}>Ajustes impresora</button>
-            <button class="button secondary" data-action="open-order-history" ${
-              state.busy || hasSaleInProgress() ? 'disabled' : ''
-            }>Historial del dia</button>
-            <button class="button secondary" data-action="toggle-table-mode" ${state.busy ? 'disabled' : ''}>
-              ${state.tableModeEnabled ? 'Modo mesa: ON' : 'Modo mesa: OFF'}
-            </button>
-            <button class="button secondary" data-action="sync-outbox" ${state.syncInFlight ? 'disabled' : ''}>
-              ${state.syncInFlight ? 'Sincronizando ordenes...' : 'Sincronizar ordenes'}
-            </button>
-            <button class="button secondary" data-action="sync-catalog" ${state.busy ? 'disabled' : ''}>Sincronizar catalogo</button>
-          </div>
-          <div class="scanner-pill ${scannerClass}">
-            <div class="scanner-pill-head">
-              <span class="scanner-dot" aria-hidden="true"></span>
-              <span class="scanner-label">Scanner</span>
-            </div>
-            <div class="scanner-code">${escapeHtml(scannerValue)}</div>
-            <div class="scanner-meta">${escapeHtml(scannerTimestamp)}</div>
-          </div>
+        <div class="jobs-table-wrap history-table-wrap">
+          <table class="jobs-table">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Codigo</th>
+                <th>Fuente</th>
+              </tr>
+            </thead>
+            <tbody>${scannerDebugRows}</tbody>
+          </table>
         </div>
-      </header>
+        <label class="field">
+          <span>Logs</span>
+          <textarea id="scanner-debug-logs" class="input scanner-debug-logs" rows="12" readonly>${escapeHtml(scannerDebugLogs)}</textarea>
+        </label>
+        <div class="modal-actions settings-footer">
+          <button class="button secondary" data-action="scanner-debug-refresh" ${state.scannerDebugLoading ? 'disabled' : ''}>Refrescar</button>
+          <button class="button secondary" data-action="scanner-debug-copy">Copiar logs</button>
+          <button class="button secondary" data-action="scanner-debug-close">Cerrar</button>
+        </div>
+      </div>
+    </div>
+  `
+    : '';
 
-      <div class="status ${statusClass}">${escapeHtml(state.status)}</div>
-
-      <section class="layout">
-        <aside class="panel categories">
-          <h2>Categorias</h2>
-          <div class="stack">${categoryHtml}</div>
-        </aside>
-
-        <section class="panel products">
-          <h2>Productos</h2>
-          <div class="products-grid">${productsHtml}</div>
-        </section>
-
-        <aside class="panel cart">
-          <h2>${state.tableModeEnabled ? 'Mesa activa' : 'Carrito'}</h2>
-          ${
-            state.tableModeEnabled
-              ? `<div class="cart-sub">${
-                  state.openTabsDetail?.tab
-                    ? `Mesa: ${escapeHtml(
-                        state.openTabsSnapshot.tables.find((t) => t.id === state.openTabsDetail?.tab.posTableId)?.name || 'Sin mesa',
-                      )} | Tab: ${escapeHtml(state.openTabsDetail.tab.folioText)} | Estado: ${escapeHtml(
-                        state.openTabsDetail.tab.status,
-                      )} | Pendientes cocina: ${state.openTabsDetail.pendingKitchenCount}`
-                    : 'Selecciona mesa/tab para operar.'
-                }</div>`
-              : ''
-          }
-          ${
-            state.tableModeEnabled && state.openTabsDetail
-              ? `<div class="cart-sub"><strong>Rondas cocina recientes</strong></div>${kitchenRoundsHtml}`
-              : ''
-          }
-          <div class="cart-list">${cartHtml}</div>
-          <div class="cart-footer">
-            <div class="total-row">
-              <span>Total</span>
-              <strong>${formatMoney(totalCents)}</strong>
-            </div>
-            <div class="cart-actions">
-              ${
-                state.tableModeEnabled
-                  ? `
-                <button class="button secondary" data-action="table-select-mesa" ${state.busy ? 'disabled' : ''}>Seleccionar mesa</button>
-                <button class="button secondary" data-action="open-tabs-send-kitchen" ${
-                  state.busy || !state.openTabsSelectedTabId ? 'disabled' : ''
-                }>Enviar cocina</button>
-                <button class="button secondary" data-action="table-refresh-detail" ${
-                  state.busy || !state.openTabsSelectedTabId ? 'disabled' : ''
-                }>Ver detalle</button>
-                <button class="button secondary danger" data-action="open-tabs-cancel-tab" ${
-                  state.busy || !state.openTabsSelectedTabId ? 'disabled' : ''
-                }>Cancelar</button>
-                <button class="button" data-action="open-checkout" ${
-                  state.busy || !state.openTabsSelectedTabId || !tableLines.length ? 'disabled' : ''
-                }>Cerrar cuenta</button>
-              `
-                  : `
-                <button class="button secondary" data-action="clear-cart" ${cartLines.length ? '' : 'disabled'}>Limpiar</button>
-                <button class="button" data-action="open-checkout" ${cartLines.length ? '' : 'disabled'}>Confirmar pedido</button>
-              `
-              }
-            </div>
-          </div>
-        </aside>
-      </section>
-
-      ${checkoutHtml}
-      ${settingsHtml}
-      ${barcodeBindingHtml}
-      ${historyHtml}
-      ${tabKitchenHistoryHtml}
-      ${SHOW_OPEN_TABS_DEBUG ? openTabsHtml : ''}
-      ${renderTableSelectorModal()}
-      ${renderTablesSettingsModal()}
-    </main>
+  const headerActionsHtml = `
+    <button class="button secondary" data-action="open-barcode-binding" ${state.busy ? 'disabled' : ''}>Vincular etiquetas</button>
+    <button class="button secondary" data-action="open-settings" ${state.busy ? 'disabled' : ''}>Ajustes impresora</button>
+    <button class="button secondary" data-action="scanner-debug-open" ${state.busy ? 'disabled' : ''}>Scanner debug</button>
+    <button class="button secondary" data-action="open-order-history" ${
+      state.busy || hasSaleInProgress() ? 'disabled' : ''
+    }>Historial del dia</button>
+    <button class="button secondary" data-action="toggle-table-mode" ${state.busy ? 'disabled' : ''}>
+      ${state.tableModeEnabled ? 'Modo mesa: ON' : 'Modo mesa: OFF'}
+    </button>
+    <button class="button secondary" data-action="sync-outbox" ${state.manualSync.inFlight ? 'disabled' : ''}>
+      ${state.manualSync.inFlight ? 'Sincronizando ordenes...' : 'Sincronizar ordenes'}
+    </button>
+    <button class="button secondary" data-action="sync-catalog" ${state.busy ? 'disabled' : ''}>Sincronizar catalogo</button>
   `;
+  if (ui.headerActions && renderRuntime.regionSignature.header !== headerActionsHtml) {
+    renderRuntime.regionSignature.header = headerActionsHtml;
+    const headerRegion = ui.headerActions;
+    renderRegion('header', () => {
+      headerRegion.innerHTML = headerActionsHtml;
+    });
+  }
+  const subtitleText = state.tableModeEnabled ? 'Operacion de mesas activa.' : 'Operacion local offline-first.';
+  if (ui.topbarSubtitle) {
+    ui.topbarSubtitle.textContent = subtitleText;
+    ui.topbarSubtitle.title = state.status;
+  }
 
-  const inputReceived = document.getElementById('input-received') as HTMLInputElement | null;
-  const checkoutPaymentMethod = document.getElementById('checkout-payment-method') as HTMLSelectElement | null;
-  if (checkoutPaymentMethod) {
-    checkoutPaymentMethod.addEventListener('change', (event) => {
-      const value = (event.target as HTMLSelectElement).value;
-      state.checkoutPaymentMethod = value === 'tarjeta' ? 'tarjeta' : 'efectivo';
-      if (state.checkoutPaymentMethod === 'tarjeta') {
-        state.receivedInput = '';
-      }
-      render();
+  if (ui.categoriesRegion && renderRuntime.regionSignature.categories !== categoryHtml) {
+    renderRuntime.regionSignature.categories = categoryHtml;
+    const categoriesRegion = ui.categoriesRegion;
+    renderRegion('categories', () => {
+      categoriesRegion.innerHTML = categoryHtml;
     });
   }
 
-  if (inputReceived) {
-    inputReceived.addEventListener('input', (event) => {
-      state.receivedInput = (event.target as HTMLInputElement).value.replace(/\D/g, '');
-      state.enterConfirmArmedAt = null;
-      render();
+  if (ui.productsRegion && renderRuntime.regionSignature.products !== productsHtml) {
+    renderRuntime.regionSignature.products = productsHtml;
+    const productsRegion = ui.productsRegion;
+    renderRegion('products', () => {
+      productsRegion.innerHTML = productsHtml;
     });
+  }
 
-    inputReceived.addEventListener('keydown', async (event) => {
-      if (event.key !== 'Enter' || event.repeat) return;
-      event.preventDefault();
-
-      if (!canConfirmPayment()) {
-        state.enterConfirmArmedAt = null;
-        setStatus('Pago insuficiente para confirmar la venta.', 'error');
-        return;
-      }
-
-      const now = Date.now();
-      if (state.enterConfirmArmedAt && now - state.enterConfirmArmedAt <= ENTER_CONFIRM_WINDOW_MS) {
-        state.enterConfirmArmedAt = null;
-        await confirmSale();
-        return;
-      }
-
-      state.enterConfirmArmedAt = now;
-      setStatus('Presiona Enter de nuevo para confirmar e imprimir.', 'info');
+  const cartPanelHtml = `
+    <h2>${state.tableModeEnabled ? 'Mesa activa' : 'Carrito'}</h2>
+    ${
+      state.tableModeEnabled
+        ? `<div class="cart-sub">${
+            state.openTabsDetail?.tab
+              ? `Mesa: ${escapeHtml(
+                  state.openTabsSnapshot.tables.find((t) => t.id === state.openTabsDetail?.tab.posTableId)?.name || 'Sin mesa',
+                )} | Tab: ${escapeHtml(state.openTabsDetail.tab.folioText)} | Estado: ${escapeHtml(
+                  state.openTabsDetail.tab.status,
+                )} | Pendientes cocina: ${state.openTabsDetail.pendingKitchenCount}`
+              : 'Selecciona mesa/tab para operar.'
+          }</div>`
+        : ''
+    }
+    ${
+      state.tableModeEnabled && state.openTabsDetail
+        ? `<div class="cart-sub"><strong>Rondas cocina recientes</strong></div>${kitchenRoundsHtml}`
+        : ''
+    }
+    <div class="cart-list">${cartHtml}</div>
+    <div class="cart-footer">
+      <div class="total-row">
+        <span>Total</span>
+        <strong>${formatMoney(totalCents)}</strong>
+      </div>
+      <div class="cart-actions">
+        ${
+          state.tableModeEnabled
+            ? `
+          <button class="button secondary" data-action="table-select-mesa" ${state.busy ? 'disabled' : ''}>Seleccionar mesa</button>
+          <button class="button secondary" data-action="open-tabs-send-kitchen" ${
+            state.busy || !state.openTabsSelectedTabId ? 'disabled' : ''
+          }>Enviar cocina</button>
+          <button class="button secondary" data-action="table-refresh-detail" ${
+            state.busy || !state.openTabsSelectedTabId ? 'disabled' : ''
+          }>Ver detalle</button>
+          <button class="button secondary danger" data-action="open-tabs-cancel-tab" ${
+            state.busy || !state.openTabsSelectedTabId ? 'disabled' : ''
+          }>Cancelar</button>
+          <button class="button" data-action="open-checkout" ${
+            state.busy || !state.openTabsSelectedTabId || !tableLines.length ? 'disabled' : ''
+          }>Cerrar cuenta</button>
+        `
+            : `
+          <button class="button secondary" data-action="clear-cart" ${cartLines.length ? '' : 'disabled'}>Limpiar</button>
+          <button class="button" data-action="open-checkout" ${cartLines.length ? '' : 'disabled'}>Confirmar pedido</button>
+        `
+        }
+      </div>
+    </div>
+  `;
+  if (ui.cartRegion && renderRuntime.regionSignature.cart !== cartPanelHtml) {
+    renderRuntime.regionSignature.cart = cartPanelHtml;
+    const cartRegion = ui.cartRegion;
+    renderRegion('cart', () => {
+      cartRegion.innerHTML = cartPanelHtml;
     });
+  }
 
-    if (shouldRefocusReceivedInput) {
-      inputReceived.focus();
-      if (prevSelectionStart !== null && prevSelectionEnd !== null) {
-        inputReceived.setSelectionRange(prevSelectionStart, prevSelectionEnd);
+  const modalsHtml = `
+    ${checkoutHtml}
+    ${settingsHtml}
+    ${barcodeBindingHtml}
+    ${historyHtml}
+    ${tabKitchenHistoryHtml}
+    ${scannerDebugHtml}
+    ${SHOW_OPEN_TABS_DEBUG ? openTabsHtml : ''}
+    ${renderTableSelectorModal()}
+    ${renderTablesSettingsModal()}
+  `;
+  if (ui.modalsRegion && renderRuntime.regionSignature.modals !== modalsHtml) {
+    renderRuntime.regionSignature.modals = modalsHtml;
+    const modalsRegion = ui.modalsRegion;
+    renderRegion('modals', () => {
+      modalsRegion.innerHTML = modalsHtml;
+    });
+  }
+
+  updateStatusBarState();
+  renderRegion('statusbar', () => {
+    renderBottomStatusRegion();
+  });
+
+  if (refocusId) {
+    const nextEl = document.getElementById(refocusId) as HTMLInputElement | HTMLTextAreaElement | null;
+    if (nextEl && nextEl !== document.activeElement) {
+      nextEl.focus();
+      if (nextEl instanceof HTMLInputElement && prevSelectionStart !== null && prevSelectionEnd !== null) {
+        nextEl.setSelectionRange(prevSelectionStart, prevSelectionEnd);
       }
     }
-  }
-
-  attachSettingsInputs();
-  attachBarcodeBindingInputs();
-  attachOpenTabsInputs();
-  attachTablesSettingsInputs();
-}
-
-function attachSettingsInputs(): void {
-  const settingsLinuxInput = document.getElementById('settings-linux-printer') as HTMLInputElement | null;
-  if (settingsLinuxInput) {
-    settingsLinuxInput.addEventListener('input', (event) => {
-      if (!state.printConfig) state.printConfig = { linuxPrinterName: '', windowsPrinterShare: '' };
-      state.printConfig.linuxPrinterName = (event.target as HTMLInputElement).value;
-    });
-  }
-
-  const settingsWindowsInput = document.getElementById('settings-windows-printer') as HTMLInputElement | null;
-  if (settingsWindowsInput) {
-    settingsWindowsInput.addEventListener('input', (event) => {
-      if (!state.printConfig) state.printConfig = { linuxPrinterName: '', windowsPrinterShare: '' };
-      state.printConfig.windowsPrinterShare = (event.target as HTMLInputElement).value;
-    });
-  }
-
-  const tenantSlugInput = document.getElementById('settings-tenant-slug') as HTMLInputElement | null;
-  if (tenantSlugInput) {
-    tenantSlugInput.addEventListener('input', (event) => {
-      if (!state.runtimeConfig) {
-        state.runtimeConfig = {
-          tenantId: null,
-          kioskId: null,
-          kioskNumber: null,
-          tenantSlug: null,
-          deviceId: null,
-          deviceSecret: null,
-        };
-      }
-      state.runtimeConfig.tenantSlug = (event.target as HTMLInputElement).value || null;
-    });
-  }
-
-  const deviceIdInput = document.getElementById('settings-device-id') as HTMLInputElement | null;
-  if (deviceIdInput) {
-    deviceIdInput.addEventListener('input', (event) => {
-      if (!state.runtimeConfig) {
-        state.runtimeConfig = {
-          tenantId: null,
-          kioskId: null,
-          kioskNumber: null,
-          tenantSlug: null,
-          deviceId: null,
-          deviceSecret: null,
-        };
-      }
-      state.runtimeConfig.deviceId = (event.target as HTMLInputElement).value || null;
-    });
-  }
-
-  const deviceSecretInput = document.getElementById('settings-device-secret') as HTMLInputElement | null;
-  if (deviceSecretInput) {
-    deviceSecretInput.addEventListener('input', (event) => {
-      if (!state.runtimeConfig) {
-        state.runtimeConfig = {
-          tenantId: null,
-          kioskId: null,
-          kioskNumber: null,
-          tenantSlug: null,
-          deviceId: null,
-          deviceSecret: null,
-        };
-      }
-      state.runtimeConfig.deviceSecret = (event.target as HTMLInputElement).value || null;
-    });
-  }
-
-  const tenantInput = document.getElementById('settings-tenant-id') as HTMLInputElement | null;
-  if (tenantInput) {
-    tenantInput.addEventListener('input', (event) => {
-      if (!state.runtimeConfig) {
-        state.runtimeConfig = {
-          tenantId: null,
-          kioskId: null,
-          kioskNumber: null,
-          tenantSlug: null,
-          deviceId: null,
-          deviceSecret: null,
-        };
-      }
-      state.runtimeConfig.tenantId = (event.target as HTMLInputElement).value || null;
-    });
-  }
-
-  const kioskIdInput = document.getElementById('settings-kiosk-id') as HTMLInputElement | null;
-  if (kioskIdInput) {
-    kioskIdInput.addEventListener('input', (event) => {
-      if (!state.runtimeConfig) {
-        state.runtimeConfig = {
-          tenantId: null,
-          kioskId: null,
-          kioskNumber: null,
-          tenantSlug: null,
-          deviceId: null,
-          deviceSecret: null,
-        };
-      }
-      state.runtimeConfig.kioskId = (event.target as HTMLInputElement).value || null;
-    });
-  }
-
-  const kioskNumberInput = document.getElementById('settings-kiosk-number') as HTMLInputElement | null;
-  if (kioskNumberInput) {
-    kioskNumberInput.addEventListener('input', (event) => {
-      const value = Number.parseInt((event.target as HTMLInputElement).value.replace(/\D/g, ''), 10);
-      if (!state.runtimeConfig) {
-        state.runtimeConfig = {
-          tenantId: null,
-          kioskId: null,
-          kioskNumber: null,
-          tenantSlug: null,
-          deviceId: null,
-          deviceSecret: null,
-        };
-      }
-      state.runtimeConfig.kioskNumber = Number.isFinite(value) ? value : null;
-    });
   }
 }
 
@@ -1657,106 +1958,53 @@ function openBarcodeBinding(): void {
   state.barcodeBindingStatusKind = 'info';
   ensureBarcodeBindingCategory();
   ensureBarcodeBindingSelection(getBarcodeBindingItems());
+  void applyScanContext();
   render();
 }
 
 function closeBarcodeBinding(): void {
   if (state.barcodeBindingBusy) return;
   state.barcodeBindingOpen = false;
+  void applyScanContext();
   render();
 }
 
-function attachBarcodeBindingInputs(): void {
-  const searchInput = document.getElementById('binding-search-input') as HTMLInputElement | null;
-  if (!searchInput) return;
-  searchInput.addEventListener('input', (event) => {
-    state.barcodeBindingSearch = (event.target as HTMLInputElement).value;
-    state.barcodeBindingStatusMessage = 'Selecciona un producto y escanea una etiqueta.';
-    state.barcodeBindingStatusKind = 'info';
-    render();
-  });
+async function openScannerDebug(): Promise<void> {
+  state.scannerDebugOpen = true;
+  await refreshScannerDebugState();
 }
 
-function attachOpenTabsInputs(): void {
-  const prefixInput = document.getElementById('open-tabs-prefix') as HTMLInputElement | null;
-  if (prefixInput) {
-    prefixInput.addEventListener('input', (event) => {
-      state.openTabsGeneratePrefixInput = (event.target as HTMLInputElement).value;
-    });
-  }
+function closeScannerDebug(): void {
+  state.scannerDebugOpen = false;
+  render();
+}
 
-  const countInput = document.getElementById('open-tabs-count') as HTMLInputElement | null;
-  if (countInput) {
-    countInput.addEventListener('input', (event) => {
-      state.openTabsGenerateCountInput = (event.target as HTMLInputElement).value.replace(/\\D/g, '');
-    });
+async function copyScannerLogs(): Promise<void> {
+  const logs = state.scannerDebugState?.logs || [];
+  const content = logs
+    .map((entry) => `${entry.ts} [${entry.level}] ${entry.message} ${entry.data ? JSON.stringify(entry.data) : ''}`)
+    .join('\n');
+  if (!content) {
+    setStatus('No hay logs para copiar.', 'info');
+    return;
   }
-
-  const startAtInput = document.getElementById('open-tabs-start-at') as HTMLInputElement | null;
-  if (startAtInput) {
-    startAtInput.addEventListener('input', (event) => {
-      state.openTabsGenerateStartAtInput = (event.target as HTMLInputElement).value.replace(/\\D/g, '');
-    });
-  }
-
-  const productInput = document.getElementById('open-tabs-product') as HTMLSelectElement | null;
-  if (productInput) {
-    productInput.addEventListener('change', (event) => {
-      state.openTabsSelectedProductId = (event.target as HTMLSelectElement).value;
-    });
-  }
-
-  const qtyInput = document.getElementById('open-tabs-qty') as HTMLInputElement | null;
-  if (qtyInput) {
-    qtyInput.addEventListener('input', (event) => {
-      state.openTabsQtyInput = (event.target as HTMLInputElement).value.replace(/\\D/g, '');
-    });
-  }
-
-  const notesInput = document.getElementById('open-tabs-notes') as HTMLInputElement | null;
-  if (notesInput) {
-    notesInput.addEventListener('input', (event) => {
-      state.openTabsNotesInput = (event.target as HTMLInputElement).value;
-    });
-  }
-
-  const paymentInput = document.getElementById('open-tabs-payment') as HTMLSelectElement | null;
-  if (paymentInput) {
-    paymentInput.addEventListener('change', (event) => {
-      const next = (event.target as HTMLSelectElement).value;
-      state.openTabsPaymentMethod = next === 'tarjeta' ? 'tarjeta' : 'efectivo';
-    });
+  try {
+    await navigator.clipboard.writeText(content);
+    setStatus('Logs de scanner copiados.', 'success');
+  } catch {
+    const area = document.getElementById('scanner-debug-logs') as HTMLTextAreaElement | null;
+    area?.focus();
+    area?.select();
+    const ok = document.execCommand('copy');
+    setStatus(ok ? 'Logs de scanner copiados.' : 'No se pudo copiar logs.', ok ? 'success' : 'error');
   }
 }
 
-function attachTablesSettingsInputs(): void {
-  const prefixInput = document.getElementById('tables-generate-prefix') as HTMLInputElement | null;
-  if (prefixInput) {
-    prefixInput.addEventListener('input', (event) => {
-      state.tablesSettingsGeneratePrefix = (event.target as HTMLInputElement).value;
-    });
+function ensureRuntimeConfigMutable(): RuntimeConfig {
+  if (!state.runtimeConfig) {
+    state.runtimeConfig = resolveRuntimeConfigDefaults();
   }
-
-  const countInput = document.getElementById('tables-generate-count') as HTMLInputElement | null;
-  if (countInput) {
-    countInput.addEventListener('input', (event) => {
-      state.tablesSettingsGenerateCount = (event.target as HTMLInputElement).value.replace(/\D/g, '');
-    });
-  }
-
-  const startAtInput = document.getElementById('tables-generate-start-at') as HTMLInputElement | null;
-  if (startAtInput) {
-    startAtInput.addEventListener('input', (event) => {
-      state.tablesSettingsGenerateStartAt = (event.target as HTMLInputElement).value.replace(/\D/g, '');
-    });
-  }
-
-  const confirmInput = document.getElementById('tables-generate-confirm') as HTMLInputElement | null;
-  if (confirmInput) {
-    confirmInput.addEventListener('input', (event) => {
-      state.tablesSettingsConfirmText = (event.target as HTMLInputElement).value;
-    });
-  }
+  return state.runtimeConfig;
 }
 
 async function assignBarcodeToSelectedProduct(barcodeRaw: string): Promise<void> {
@@ -1790,6 +2038,7 @@ async function assignBarcodeToSelectedProduct(barcodeRaw: string): Promise<void>
       state.snapshot.items = state.snapshot.items.map((item) =>
         item.id === itemId ? { ...item, barcode } : item,
       );
+      resetDerivedCache();
     }
 
     state.barcodeBindingStatusMessage = `Etiqueta ${barcode} asignada correctamente.`;
@@ -1805,17 +2054,14 @@ async function assignBarcodeToSelectedProduct(barcodeRaw: string): Promise<void>
 }
 
 function addScannedProductToCart(barcodeRaw: string): void {
-  if (
-    state.busy ||
-    state.checkoutOpen ||
-    state.settingsOpen ||
-    state.barcodeBindingOpen ||
-    state.ordersHistoryOpen
-  )
+  if (state.busy || state.checkoutOpen || state.settingsOpen || state.ordersHistoryOpen)
     return;
 
   const product = findItemByBarcode(barcodeRaw);
   if (!product) {
+    state.statusBar.scanner.phase = 'warn';
+    state.statusBar.scanner.lastCode = barcodeRaw;
+    state.statusBar.scanner.lastAt = new Date().toISOString();
     setStatus(`No existe producto con etiqueta: ${barcodeRaw}`, 'error');
     return;
   }
@@ -1826,11 +2072,31 @@ function addScannedProductToCart(barcodeRaw: string): void {
   }
 
   adjustQty(product.id, 1);
+  playScanFeedback();
+  state.statusBar.scanner.phase = 'ok';
+  state.statusBar.scanner.lastCode = barcodeRaw;
+  state.statusBar.scanner.lastAt = new Date().toISOString();
   setStatus(`Escaneado: ${product.name} agregado al carrito.`, 'success');
+}
+
+async function handleScanReading(reading: ScannerReading): Promise<void> {
+  state.statusBar.scanner.lastCode = reading.code;
+  state.statusBar.scanner.lastAt = reading.receivedAt || new Date().toISOString();
+  const mode = getScanModeByUiState();
+  if (mode === 'assign') {
+    await assignBarcodeToSelectedProduct(reading.code);
+    render();
+    return;
+  }
+
+  if (mode !== 'sale') return;
+  addScannedProductToCart(reading.code);
+  render();
 }
 
 async function loadCatalogFromLocal(): Promise<void> {
   state.snapshot = await window.posKiosk.getCatalog();
+  resetDerivedCache();
   ensureActiveCategory();
 }
 
@@ -1874,6 +2140,7 @@ async function openSettings(): Promise<void> {
   state.settingsPendingAction = 'load';
   state.settingsStatusMessage = 'Cargando ajustes...';
   state.settingsStatusKind = 'info';
+  void applyScanContext();
   render();
 
   try {
@@ -1893,6 +2160,7 @@ async function openSettings(): Promise<void> {
 function closeSettings(): void {
   if (state.busy) return;
   state.settingsOpen = false;
+  void applyScanContext();
   render();
 }
 
@@ -2077,6 +2345,7 @@ async function openOrderHistory(): Promise<void> {
   state.ordersHistoryLoading = true;
   state.ordersHistoryStatusMessage = 'Cargando historial del dia...';
   state.ordersHistoryStatusKind = 'info';
+  void applyScanContext();
   render();
 
   try {
@@ -2096,6 +2365,7 @@ async function openOrderHistory(): Promise<void> {
 function closeOrderHistory(): void {
   if (state.ordersHistoryActionBusy) return;
   state.ordersHistoryOpen = false;
+  void applyScanContext();
   render();
 }
 
@@ -2189,6 +2459,7 @@ async function openTabKitchenHistory(tabId: string): Promise<void> {
   state.tabKitchenHistoryTabId = tabId;
   state.tabKitchenHistoryStatusMessage = 'Cargando comandas...';
   state.tabKitchenHistoryStatusKind = 'info';
+  void applyScanContext();
   render();
 
   try {
@@ -2209,6 +2480,7 @@ function closeTabKitchenHistory(): void {
   state.tabKitchenHistoryOpen = false;
   state.tabKitchenHistoryTabId = '';
   state.tabKitchenHistoryDetail = null;
+  void applyScanContext();
   render();
 }
 
@@ -2308,6 +2580,8 @@ function buildTestPrintRawBase64(): string {
 async function confirmSale(): Promise<void> {
   if (!canConfirmPayment()) return;
   state.enterConfirmArmedAt = null;
+  state.statusBar.print.phase = 'working';
+  state.statusBar.print.lastErrorShort = '';
 
   if (state.tableModeEnabled) {
     if (!state.openTabsSelectedTabId) {
@@ -2341,13 +2615,17 @@ async function confirmSale(): Promise<void> {
 
       state.checkoutOpen = false;
       state.receivedInput = '';
+      void applyScanContext();
       state.openTabsSelectedTabId = '';
       await refreshOpenTabsSnapshot(false);
       triggerSyncSoon();
 
       if (result.printStatus === 'FAILED') {
+        state.statusBar.print.phase = 'error';
+        state.statusBar.print.lastErrorShort = result.error || 'fallo impresion';
         setStatus('Cuenta cerrada, pero fallo la impresion final.', 'error');
       } else {
+        state.statusBar.print.phase = 'ok';
         setStatus('Cuenta cerrada e impresa correctamente.', 'success');
       }
     } catch (error) {
@@ -2383,14 +2661,24 @@ async function confirmSale(): Promise<void> {
     clearCart();
     state.checkoutOpen = false;
     state.receivedInput = '';
+    void applyScanContext();
 
     if (result.printStatus === 'FAILED') {
+      state.statusBar.print.phase = 'error';
+      state.statusBar.print.lastErrorShort = result.error || 'fallo impresion';
       setStatus(`Venta ${result.folioText || ''} guardada localmente. Error de impresion: ${result.error || 'sin detalle'}.`, 'error');
+    } else if (result.printStatus === 'QUEUED') {
+      state.statusBar.print.phase = 'working';
+      state.statusBar.print.lastErrorShort = '';
+      setStatus(`Venta ${result.folioText || ''} guardada. Impresion en cola.`, 'success');
     } else {
+      state.statusBar.print.phase = 'ok';
       setStatus(`Venta ${result.folioText || ''} guardada e impresa.`, 'success');
     }
     triggerSyncSoon();
   } catch (error) {
+    state.statusBar.print.phase = 'error';
+    state.statusBar.print.lastErrorShort = error instanceof Error ? error.message : 'error impresion';
     setStatus(error instanceof Error ? error.message : 'Error confirmando venta.', 'error');
   } finally {
     state.busy = false;
@@ -2412,6 +2700,8 @@ async function saveSettings(): Promise<void> {
     }
     if (state.runtimeConfig) {
       state.runtimeConfig = await window.posKiosk.setRuntimeConfig(state.runtimeConfig);
+      await window.posScanner.setSettings(runtimeScannerSettingsToInput(state.runtimeConfig));
+      await applyScanContext();
     }
     state.settingsStatusMessage = 'Ajustes guardados correctamente.';
     state.settingsStatusKind = 'success';
@@ -2450,6 +2740,8 @@ async function refreshPrintJobs(): Promise<void> {
 async function printTest(): Promise<void> {
   if (state.busy) return;
   state.busy = true;
+  state.statusBar.print.phase = 'working';
+  state.statusBar.print.lastErrorShort = '';
   state.settingsPendingAction = 'print-test';
   state.settingsStatusMessage = 'Enviando impresion de prueba...';
   state.settingsStatusKind = 'info';
@@ -2459,9 +2751,12 @@ async function printTest(): Promise<void> {
     const result = await window.posKiosk.printV2({ rawBase64: buildTestPrintRawBase64(), jobName: 'test_print_v2' });
     if (!result.ok) throw new Error(result.error || 'No se pudo imprimir prueba.');
     await loadSettingsData();
+    state.statusBar.print.phase = 'ok';
     state.settingsStatusMessage = `Prueba enviada. Job: ${result.jobId}`;
     state.settingsStatusKind = 'success';
   } catch (error) {
+    state.statusBar.print.phase = 'error';
+    state.statusBar.print.lastErrorShort = error instanceof Error ? error.message : 'error impresion';
     state.settingsStatusMessage = error instanceof Error ? error.message : 'Error al imprimir prueba.';
     state.settingsStatusKind = 'error';
   } finally {
@@ -2472,41 +2767,54 @@ async function printTest(): Promise<void> {
 }
 
 async function syncOutbox(manual = false): Promise<void> {
-  if (state.syncInFlight) return;
-  state.syncInFlight = true;
-  if (manual) state.busy = true;
+  if (manual) {
+    if (state.manualSync.inFlight) return;
+    state.manualSync.inFlight = true;
+  }
   render();
 
   try {
-    const result = await window.posKiosk.syncOutbox();
-    state.syncLastAt = result.lastSyncedAt || new Date().toISOString();
+    const result = await window.posKiosk.syncOutbox(manual ? 'manual' : 'auto');
+    state.syncLastAt = result.lastSyncedAt || state.syncLastAt || new Date().toISOString();
     state.syncPendingLegacy = Number.isFinite(result.pendingLegacy) ? Number(result.pendingLegacy) : state.syncPendingLegacy;
     state.syncPendingTabs = Number.isFinite(result.pendingTabs) ? Number(result.pendingTabs) : state.syncPendingTabs;
     state.syncPendingTotal = Number.isFinite(result.pending) ? Number(result.pending) : state.syncPendingTotal;
     state.syncLastError = result.ok ? '' : result.error || 'Sync parcial/fallida.';
+    state.autoSync.pendingTotal = state.syncPendingTotal;
+    state.autoSync.lastErrorShort = state.syncLastError;
+    if (result.ok) {
+      state.autoSync.phase = state.syncPendingTotal > 0 ? 'retrying' : 'ok';
+      state.autoSync.lastOkAt = result.lastSyncedAt || new Date().toISOString();
+    } else {
+      state.autoSync.phase = 'retrying';
+    }
 
-    if (!result.ok) {
+    if (manual && !result.ok) {
       setStatus(
         `Sync parcial/fallida. Procesados: ${result.processed}, enviados: ${result.sent}, fallidos: ${result.failed}, pendientes: ${result.pending}. ${result.error || ''}`,
         'error',
       );
-      state.syncAutoBackoffMs = Math.min(state.syncAutoBackoffMs * 2, 120000);
-    } else {
+      state.manualSync.lastError = result.error || 'Sync parcial/fallida.';
+    } else if (manual) {
       setStatus(
         `Sync OK. Procesados: ${result.processed}, enviados: ${result.sent}, pendientes: ${result.pending}.`,
         'success',
       );
-      state.syncAutoBackoffMs = 15000;
+      state.manualSync.lastError = '';
+      state.manualSync.lastResultAt = new Date().toISOString();
     }
   } catch (error) {
-    state.syncLastError = error instanceof Error ? error.message : 'Error sincronizando outbox.';
-    setStatus(state.syncLastError, 'error');
-    state.syncAutoBackoffMs = Math.min(state.syncAutoBackoffMs * 2, 120000);
+    const message = error instanceof Error ? error.message : 'Error sincronizando outbox.';
+    state.syncLastError = message;
+    state.autoSync.lastErrorShort = message;
+    state.autoSync.phase = 'retrying';
+    if (manual) {
+      state.manualSync.lastError = message;
+      setStatus(message, 'error');
+    }
   } finally {
-    state.syncInFlight = false;
-    if (manual) state.busy = false;
+    if (manual) state.manualSync.inFlight = false;
     await refreshSyncStatus();
-    scheduleAutoSync();
     render();
   }
 }
@@ -2517,23 +2825,17 @@ async function refreshSyncStatus(): Promise<void> {
     state.syncPendingLegacy = status.pendingLegacy;
     state.syncPendingTabs = status.pendingTabs;
     state.syncPendingTotal = status.pendingTotal;
+    state.autoSync.pendingTotal = status.pendingTotal;
+    if (status.phase) state.autoSync.phase = status.phase;
+    if (typeof status.lastErrorShort === 'string') state.autoSync.lastErrorShort = status.lastErrorShort;
+    if (typeof status.lastOkAt !== 'undefined') state.autoSync.lastOkAt = status.lastOkAt || null;
   } catch {
     // Ignore status refresh errors to avoid blocking UI.
   }
 }
 
-function scheduleAutoSync(): void {
-  if (state.syncAutoTimer) {
-    clearTimeout(state.syncAutoTimer);
-  }
-  state.syncAutoTimer = setTimeout(() => {
-    void syncOutbox(false);
-  }, state.syncAutoBackoffMs);
-}
-
 function triggerSyncSoon(): void {
-  state.syncAutoBackoffMs = Math.min(state.syncAutoBackoffMs, 2000);
-  scheduleAutoSync();
+  void syncOutbox(false);
 }
 
 async function configureOpenTabsTables(): Promise<void> {
@@ -2700,12 +3002,16 @@ async function removeTabLine(lineId: string): Promise<void> {
 async function sendSelectedTabToKitchen(): Promise<void> {
   if (state.openTabsBusy || !state.openTabsSelectedTabId) return;
   state.openTabsBusy = true;
+  state.statusBar.print.phase = 'working';
+  state.statusBar.print.lastErrorShort = '';
   setOpenTabsStatus('Enviando a cocina...', 'info');
   render();
   try {
     const result = await window.posKiosk.sendTabToKitchen({ tabId: state.openTabsSelectedTabId });
     await refreshOpenTabsSnapshot(true);
     if (!result.ok) {
+      state.statusBar.print.phase = 'error';
+      state.statusBar.print.lastErrorShort = result.error || 'fallo impresion';
       setOpenTabsStatus(
         `Impresion fallida, pero se registro evento de error para sync. ${result.error || ''}`.trim(),
         'error',
@@ -2713,9 +3019,12 @@ async function sendSelectedTabToKitchen(): Promise<void> {
       triggerSyncSoon();
       return;
     }
+    state.statusBar.print.phase = 'ok';
     setOpenTabsStatus(`Comanda enviada a cocina. Job ${result.jobId || 'n/a'}.`, 'success');
     triggerSyncSoon();
   } catch (error) {
+    state.statusBar.print.phase = 'error';
+    state.statusBar.print.lastErrorShort = error instanceof Error ? error.message : 'error impresion';
     setOpenTabsStatus(error instanceof Error ? error.message : 'Error enviando a cocina.', 'error');
   } finally {
     state.openTabsBusy = false;
@@ -2790,6 +3099,127 @@ async function cancelSelectedTab(): Promise<void> {
   }
 }
 
+app.addEventListener('input', (event) => {
+  const target = event.target as HTMLInputElement | HTMLTextAreaElement | null;
+  if (!target) return;
+  const id = target.id;
+
+  if (id === 'input-received') {
+    state.receivedInput = target.value.replace(/\D/g, '');
+    state.enterConfirmArmedAt = null;
+    queueRender('input-received');
+    return;
+  }
+  if (id === 'binding-search-input') {
+    state.barcodeBindingSearch = target.value;
+    state.barcodeBindingStatusMessage = 'Selecciona un producto y escanea una etiqueta.';
+    state.barcodeBindingStatusKind = 'info';
+    queueRender('binding-search');
+    return;
+  }
+  if (id === 'open-tabs-prefix') {
+    state.openTabsGeneratePrefixInput = target.value;
+    return;
+  }
+  if (id === 'open-tabs-count') {
+    state.openTabsGenerateCountInput = target.value.replace(/\D/g, '');
+    return;
+  }
+  if (id === 'open-tabs-start-at') {
+    state.openTabsGenerateStartAtInput = target.value.replace(/\D/g, '');
+    return;
+  }
+  if (id === 'open-tabs-qty') {
+    state.openTabsQtyInput = target.value.replace(/\D/g, '');
+    return;
+  }
+  if (id === 'open-tabs-notes') {
+    state.openTabsNotesInput = target.value;
+    return;
+  }
+  if (id === 'tables-generate-prefix') {
+    state.tablesSettingsGeneratePrefix = target.value;
+    return;
+  }
+  if (id === 'tables-generate-count') {
+    state.tablesSettingsGenerateCount = target.value.replace(/\D/g, '');
+    return;
+  }
+  if (id === 'tables-generate-start-at') {
+    state.tablesSettingsGenerateStartAt = target.value.replace(/\D/g, '');
+    return;
+  }
+  if (id === 'tables-generate-confirm') {
+    state.tablesSettingsConfirmText = target.value;
+    return;
+  }
+
+  const runtime = ensureRuntimeConfigMutable();
+  if (!state.printConfig) state.printConfig = { linuxPrinterName: '', windowsPrinterShare: '' };
+  if (id === 'settings-linux-printer') state.printConfig.linuxPrinterName = target.value;
+  else if (id === 'settings-windows-printer') state.printConfig.windowsPrinterShare = target.value;
+  else if (id === 'settings-tenant-slug') runtime.tenantSlug = target.value || null;
+  else if (id === 'settings-device-id') runtime.deviceId = target.value || null;
+  else if (id === 'settings-device-secret') runtime.deviceSecret = target.value || null;
+  else if (id === 'settings-tenant-id') runtime.tenantId = target.value || null;
+  else if (id === 'settings-kiosk-id') runtime.kioskId = target.value || null;
+  else if (id === 'settings-kiosk-number') {
+    const value = Number.parseInt(target.value.replace(/\D/g, ''), 10);
+    runtime.kioskNumber = Number.isFinite(value) ? value : null;
+  } else if (id === 'settings-scanner-min-len') runtime.scannerMinCodeLen = Number.parseInt(target.value, 10) || null;
+  else if (id === 'settings-scanner-max-len') runtime.scannerMaxCodeLen = Number.parseInt(target.value, 10) || null;
+  else if (id === 'settings-scanner-max-interkey') runtime.scannerMaxInterKeyMsScan = Number.parseInt(target.value, 10) || null;
+  else if (id === 'settings-scanner-end-gap') runtime.scannerScanEndGapMs = Number.parseInt(target.value, 10) || null;
+  else if (id === 'settings-scanner-human-gap') runtime.scannerHumanKeyGapMs = Number.parseInt(target.value, 10) || null;
+  else if (id === 'settings-scanner-allowed-pattern') runtime.scannerAllowedCharsPattern = target.value || null;
+});
+
+app.addEventListener('change', (event) => {
+  const target = event.target as HTMLSelectElement | null;
+  if (!target) return;
+  const id = target.id;
+  if (id === 'checkout-payment-method') {
+    state.checkoutPaymentMethod = target.value === 'tarjeta' ? 'tarjeta' : 'efectivo';
+    if (state.checkoutPaymentMethod === 'tarjeta') state.receivedInput = '';
+    queueRender('checkout-payment-method');
+    return;
+  }
+  if (id === 'open-tabs-product') {
+    state.openTabsSelectedProductId = target.value;
+    return;
+  }
+  if (id === 'open-tabs-payment') {
+    state.openTabsPaymentMethod = target.value === 'tarjeta' ? 'tarjeta' : 'efectivo';
+    return;
+  }
+  if (id === 'settings-scanner-enter-terminator') {
+    ensureRuntimeConfigMutable().scannerAllowEnterTerminator = target.value === '1';
+  }
+});
+
+app.addEventListener('keydown', async (event) => {
+  const target = event.target as HTMLElement | null;
+  if (!target || target.id !== 'input-received') return;
+  if (event.key !== 'Enter' || event.repeat) return;
+  event.preventDefault();
+
+  if (!canConfirmPayment()) {
+    state.enterConfirmArmedAt = null;
+    setStatus('Pago insuficiente para confirmar la venta.', 'error');
+    return;
+  }
+
+  const now = Date.now();
+  if (state.enterConfirmArmedAt && now - state.enterConfirmArmedAt <= ENTER_CONFIRM_WINDOW_MS) {
+    state.enterConfirmArmedAt = null;
+    await confirmSale();
+    return;
+  }
+
+  state.enterConfirmArmedAt = now;
+  setStatus('Presiona Enter de nuevo para confirmar e imprimir.', 'info');
+});
+
 app.addEventListener('click', async (event) => {
   const target = event.target as HTMLElement | null;
   if (!target) return;
@@ -2801,6 +3231,10 @@ app.addEventListener('click', async (event) => {
   const id = actionEl.dataset.id || '';
 
   switch (action) {
+    case 'toggle-render-metrics':
+      renderRuntime.metricsEnabled = !renderRuntime.metricsEnabled;
+      setStatus(`Metricas de render ${renderRuntime.metricsEnabled ? 'activadas' : 'desactivadas'}.`, 'info');
+      break;
     case 'toggle-table-mode':
       if (state.tableModeEnabled) {
         deactivateTableMode();
@@ -2934,6 +3368,7 @@ app.addEventListener('click', async (event) => {
       state.barcodeBindingSelectedItemId = id;
       state.barcodeBindingStatusMessage = 'Producto listo. Escanea la etiqueta para guardarla.';
       state.barcodeBindingStatusKind = 'info';
+      void applyScanContext();
       render();
       break;
     case 'sync-catalog':
@@ -2941,6 +3376,18 @@ app.addEventListener('click', async (event) => {
       break;
     case 'open-settings':
       await openSettings();
+      break;
+    case 'scanner-debug-open':
+      await openScannerDebug();
+      break;
+    case 'scanner-debug-close':
+      closeScannerDebug();
+      break;
+    case 'scanner-debug-refresh':
+      await refreshScannerDebugState();
+      break;
+    case 'scanner-debug-copy':
+      await copyScannerLogs();
       break;
     case 'open-order-history':
       await openOrderHistory();
@@ -3037,15 +3484,49 @@ app.addEventListener('click', async (event) => {
   }
 });
 
-async function bootstrap(): Promise<void> {
-  window.posKiosk.onScannerData((reading) => {
-    state.scannerReading = reading;
-    if (state.barcodeBindingOpen) {
-      void assignBarcodeToSelectedProduct(reading.code);
-      return;
+function syncScanSensitiveFocus(): void {
+  const active = document.activeElement as HTMLElement | null;
+  const hasSensitiveFocus = Boolean(active?.closest('[data-scan-capture="off"]'));
+  const next = hasSensitiveFocus ? 1 : 0;
+  if (state.scanCaptureSensitiveFocusCount === next) return;
+  state.scanCaptureSensitiveFocusCount = next;
+  void applyScanContext();
+}
+
+document.addEventListener('focusin', () => {
+  syncScanSensitiveFocus();
+});
+
+document.addEventListener('focusout', () => {
+  setTimeout(() => {
+    syncScanSensitiveFocus();
+  }, 0);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.ctrlKey && event.altKey && !event.shiftKey && event.code === 'KeyD') {
+    event.preventDefault();
+    if (state.scannerDebugOpen) {
+      closeScannerDebug();
+    } else {
+      void openScannerDebug();
     }
-    addScannedProductToCart(reading.code);
-    render();
+  }
+});
+
+async function bootstrap(): Promise<void> {
+  window.posScanner.onScan((reading) => {
+    void handleScanReading(reading);
+  });
+  window.posKiosk.onOutboxStatus((status) => {
+    state.syncPendingLegacy = status.pendingLegacy;
+    state.syncPendingTabs = status.pendingTabs;
+    state.syncPendingTotal = status.pendingTotal;
+    state.autoSync.pendingTotal = status.pendingTotal;
+    state.autoSync.phase = status.phase || state.autoSync.phase;
+    state.autoSync.lastOkAt = typeof status.lastOkAt !== 'undefined' ? status.lastOkAt || null : state.autoSync.lastOkAt;
+    state.autoSync.lastErrorShort = status.lastErrorShort || '';
+    queueRender('sync-status-push');
   });
 
   state.busy = true;
@@ -3053,8 +3534,10 @@ async function bootstrap(): Promise<void> {
 
   try {
     await loadCatalogFromLocal();
+    await loadSettingsData();
+    await window.posScanner.setSettings(runtimeScannerSettingsToInput(state.runtimeConfig));
+    await applyScanContext();
     await refreshSyncStatus();
-    scheduleAutoSync();
     if (!state.snapshot?.items.length) {
       setStatus('Catalogo local vacio. Presiona "Sincronizar catalogo".', 'info');
     } else {

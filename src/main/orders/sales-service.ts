@@ -6,13 +6,32 @@ import type {
   ReprintOrderResult,
 } from '../../shared/orders';
 import { PrintService } from '../printing/print-service';
+import type { SyncCoordinator } from '../sync/sync-coordinator';
 import { OrdersRepository } from './orders-repository';
 
 export class SalesService {
+  private pendingOrderByPrintJobId = new Map<string, string>();
+
   constructor(
     private readonly ordersRepository: OrdersRepository,
     private readonly printService: PrintService,
+    private readonly syncCoordinator: SyncCoordinator,
   ) {}
+
+  start(): void {
+    this.printService.onJobCompleted(({ jobId, status, error }) => {
+      const orderId = this.pendingOrderByPrintJobId.get(jobId);
+      if (!orderId) return;
+      this.pendingOrderByPrintJobId.delete(jobId);
+      this.ordersRepository.recordReprintAttemptAndOutbox({
+        orderId,
+        printStatus: status === 'SENT' ? 'SENT' : 'FAILED',
+        printJobId: jobId,
+        printError: status === 'SENT' ? null : error || 'Print error',
+      });
+      this.syncCoordinator.notifyPendingWork('auto');
+    });
+  }
 
   async createSaleAndPrint(input: CreateSaleInput): Promise<CreateSaleResult> {
     const runtime = this.ordersRepository.getRuntimeConfig();
@@ -45,28 +64,38 @@ export class SalesService {
     }
 
     const cambioCents = pagoRecibidoCents - totalCents;
-    const rawBase64 = this.buildTicketRawBase64(lines, totalCents, pagoRecibidoCents, cambioCents);
-
-    const printResult = await this.printService.printV2({
-      rawBase64,
-      jobName: `order_${Date.now()}`,
-      tenantId: runtime.tenantId,
-      kioskId: runtime.kioskId,
-    });
-
-    const printStatus = printResult.ok ? 'SENT' : 'FAILED';
-    const printError = printResult.ok ? null : printResult.error || 'Print error';
-
     const created = this.ordersRepository.createOrderAndOutbox({
       lines,
       totalCents,
       pagoRecibidoCents,
       cambioCents,
       metodoPago: input.metodoPago || 'efectivo',
-      printStatus,
-      printJobId: printResult.jobId || null,
-      printError,
+      printStatus: 'FAILED',
+      printJobId: null,
+      printError: 'Print queued',
+      printAttempted: false,
     });
+    this.syncCoordinator.notifyPendingWork('sale');
+
+    const rawBase64 = this.buildTicketRawBase64(lines, totalCents, pagoRecibidoCents, cambioCents, created.folioText);
+    try {
+      const queued = this.printService.enqueuePrintV2({
+        rawBase64,
+        jobName: `order_${Date.now()}`,
+        tenantId: runtime.tenantId,
+        kioskId: runtime.kioskId,
+        orderId: created.orderId,
+      });
+      this.pendingOrderByPrintJobId.set(queued.jobId, created.orderId);
+    } catch (error) {
+      this.ordersRepository.recordReprintAttemptAndOutbox({
+        orderId: created.orderId,
+        printStatus: 'FAILED',
+        printJobId: null,
+        printError: error instanceof Error ? error.message : 'Print queue error',
+      });
+      this.syncCoordinator.notifyPendingWork('auto');
+    }
 
     return {
       ok: true,
@@ -74,8 +103,7 @@ export class SalesService {
       folioText: created.folioText,
       totalCents,
       cambioCents,
-      printStatus,
-      error: printResult.ok ? undefined : printError || undefined,
+      printStatus: 'QUEUED',
     };
   }
 
@@ -112,31 +140,20 @@ export class SalesService {
       true,
     );
 
-    const printResult = await this.printService.printV2({
+    const queued = this.printService.enqueuePrintV2({
       rawBase64,
       jobName: `reprint_${order.folioText}_${Date.now()}`,
       tenantId: order.tenantId,
       kioskId: order.kioskId,
       orderId,
     });
-
-    const persisted = this.ordersRepository.recordReprintAttemptAndOutbox({
-      orderId,
-      printStatus: printResult.ok ? 'SENT' : 'FAILED',
-      printJobId: printResult.jobId || null,
-      printError: printResult.ok ? null : printResult.error || 'Print error',
-    });
-
-    if (!persisted.ok) {
-      return { ok: false, orderId, error: persisted.error || 'No se pudo registrar la reimpresion.' };
-    }
-
+    this.pendingOrderByPrintJobId.set(queued.jobId, orderId);
+    this.syncCoordinator.notifyPendingWork('auto');
     return {
-      ok: printResult.ok,
+      ok: true,
       orderId,
-      printStatus: printResult.ok ? 'SENT' : 'FAILED',
-      jobId: printResult.jobId,
-      error: printResult.ok ? undefined : printResult.error,
+      printStatus: 'SENT',
+      jobId: queued.jobId,
     };
   }
 
@@ -150,6 +167,7 @@ export class SalesService {
     if (!result.ok) {
       return { ok: false, orderId, error: result.error || 'No se pudo cancelar la orden.' };
     }
+    this.syncCoordinator.notifyPendingWork('sale');
 
     return {
       ok: true,

@@ -12,6 +12,8 @@ export const IPC_CHANNELS = {
   ORDER_CANCEL: 'pos:orders:cancel',
   OUTBOX_SYNC: 'pos:outbox:sync',
   OUTBOX_SYNC_STATUS: 'pos:outbox:sync-status',
+  OUTBOX_STATUS_EVENT: 'pos:outbox:status',
+  DEBUG_GET_STATE: 'pos:debug:getState',
   OPEN_TABS_SNAPSHOT: 'pos:open-tabs:snapshot',
   OPEN_TABS_DETAIL: 'pos:open-tabs:detail',
   OPEN_TABS_CONFIGURE_TABLES: 'pos:open-tabs:configure-tables',
@@ -34,6 +36,11 @@ export const IPC_CHANNELS = {
   RUNTIME_CONFIG_GET: 'pos:runtime-config:get',
   RUNTIME_CONFIG_SET: 'pos:runtime-config:set',
   SCANNER_DATA: 'pos:scanner:data',
+  SCAN_CAPTURE_DATA: 'pos:scan',
+  SCAN_CAPTURE_SET_CONTEXT: 'pos:scan:setContext',
+  SCAN_CAPTURE_SET_ENABLED: 'pos:scan:setEnabled',
+  SCAN_CAPTURE_SET_SETTINGS: 'pos:scan:setSettings',
+  SCAN_CAPTURE_GET_DEBUG_STATE: 'pos:scan:getDebugState',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

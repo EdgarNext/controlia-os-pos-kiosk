@@ -68,6 +68,17 @@ interface OrderReceiptData {
   lines: SaleLineInput[];
 }
 
+function parseNullableInt(raw: string | undefined): number | null {
+  const parsed = Number.parseInt(String(raw || ''), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseNullableBoolean(raw: string | undefined): boolean | null {
+  if (raw === '1' || raw === 'true') return true;
+  if (raw === '0' || raw === 'false') return false;
+  return null;
+}
+
 export class OrdersRepository {
   private db: Database.Database;
 
@@ -170,7 +181,22 @@ export class OrdersRepository {
   getRuntimeConfig(): RuntimeConfig {
     const rows = this.db
       .prepare(
-        `SELECT key, value FROM app_runtime_config WHERE key IN ('tenant_id','kiosk_id','kiosk_number','tenant_slug','device_id','device_secret')`,
+        `SELECT key, value FROM app_runtime_config WHERE key IN (
+          'tenant_id',
+          'kiosk_id',
+          'kiosk_number',
+          'tenant_slug',
+          'device_id',
+          'device_secret',
+          'scanner_mode',
+          'scanner_min_code_len',
+          'scanner_max_code_len',
+          'scanner_max_interkey_ms_scan',
+          'scanner_scan_end_gap_ms',
+          'scanner_human_key_gap_ms',
+          'scanner_allow_enter_terminator',
+          'scanner_allowed_chars_pattern'
+        )`,
       )
       .all() as Array<{ key: string; value: string }>;
     const map = new Map(rows.map((row) => [row.key, row.value]));
@@ -184,6 +210,14 @@ export class OrdersRepository {
       tenantSlug: map.get('tenant_slug') || null,
       deviceId: map.get('device_id') || null,
       deviceSecret: map.get('device_secret') || null,
+      scannerMode: map.get('scanner_mode') === 'cdc' ? 'cdc' : 'hid',
+      scannerMinCodeLen: parseNullableInt(map.get('scanner_min_code_len')),
+      scannerMaxCodeLen: parseNullableInt(map.get('scanner_max_code_len')),
+      scannerMaxInterKeyMsScan: parseNullableInt(map.get('scanner_max_interkey_ms_scan')),
+      scannerScanEndGapMs: parseNullableInt(map.get('scanner_scan_end_gap_ms')),
+      scannerHumanKeyGapMs: parseNullableInt(map.get('scanner_human_key_gap_ms')),
+      scannerAllowEnterTerminator: parseNullableBoolean(map.get('scanner_allow_enter_terminator')),
+      scannerAllowedCharsPattern: map.get('scanner_allowed_chars_pattern') || null,
     };
   }
 
@@ -208,6 +242,35 @@ export class OrdersRepository {
         typeof input.deviceSecret === 'string' && input.deviceSecret.trim()
           ? input.deviceSecret.trim()
           : current.deviceSecret,
+      scannerMode: input.scannerMode === 'cdc' ? 'cdc' : input.scannerMode === 'hid' ? 'hid' : current.scannerMode,
+      scannerMinCodeLen:
+        Number.isInteger(input.scannerMinCodeLen) && Number(input.scannerMinCodeLen) > 0
+          ? Number(input.scannerMinCodeLen)
+          : current.scannerMinCodeLen,
+      scannerMaxCodeLen:
+        Number.isInteger(input.scannerMaxCodeLen) && Number(input.scannerMaxCodeLen) > 0
+          ? Number(input.scannerMaxCodeLen)
+          : current.scannerMaxCodeLen,
+      scannerMaxInterKeyMsScan:
+        Number.isInteger(input.scannerMaxInterKeyMsScan) && Number(input.scannerMaxInterKeyMsScan) > 0
+          ? Number(input.scannerMaxInterKeyMsScan)
+          : current.scannerMaxInterKeyMsScan,
+      scannerScanEndGapMs:
+        Number.isInteger(input.scannerScanEndGapMs) && Number(input.scannerScanEndGapMs) > 0
+          ? Number(input.scannerScanEndGapMs)
+          : current.scannerScanEndGapMs,
+      scannerHumanKeyGapMs:
+        Number.isInteger(input.scannerHumanKeyGapMs) && Number(input.scannerHumanKeyGapMs) > 0
+          ? Number(input.scannerHumanKeyGapMs)
+          : current.scannerHumanKeyGapMs,
+      scannerAllowEnterTerminator:
+        typeof input.scannerAllowEnterTerminator === 'boolean'
+          ? input.scannerAllowEnterTerminator
+          : current.scannerAllowEnterTerminator,
+      scannerAllowedCharsPattern:
+        typeof input.scannerAllowedCharsPattern === 'string' && input.scannerAllowedCharsPattern.trim()
+          ? input.scannerAllowedCharsPattern.trim()
+          : current.scannerAllowedCharsPattern,
     };
 
     const now = new Date().toISOString();
@@ -238,6 +301,42 @@ export class OrdersRepository {
       if (next.deviceSecret) {
         upsert.run({ key: 'device_secret', value: next.deviceSecret, updated_at: now });
       }
+      if (next.scannerMode) {
+        upsert.run({ key: 'scanner_mode', value: next.scannerMode, updated_at: now });
+      }
+      if (Number.isInteger(next.scannerMinCodeLen)) {
+        upsert.run({ key: 'scanner_min_code_len', value: String(next.scannerMinCodeLen), updated_at: now });
+      }
+      if (Number.isInteger(next.scannerMaxCodeLen)) {
+        upsert.run({ key: 'scanner_max_code_len', value: String(next.scannerMaxCodeLen), updated_at: now });
+      }
+      if (Number.isInteger(next.scannerMaxInterKeyMsScan)) {
+        upsert.run({
+          key: 'scanner_max_interkey_ms_scan',
+          value: String(next.scannerMaxInterKeyMsScan),
+          updated_at: now,
+        });
+      }
+      if (Number.isInteger(next.scannerScanEndGapMs)) {
+        upsert.run({ key: 'scanner_scan_end_gap_ms', value: String(next.scannerScanEndGapMs), updated_at: now });
+      }
+      if (Number.isInteger(next.scannerHumanKeyGapMs)) {
+        upsert.run({ key: 'scanner_human_key_gap_ms', value: String(next.scannerHumanKeyGapMs), updated_at: now });
+      }
+      if (typeof next.scannerAllowEnterTerminator === 'boolean') {
+        upsert.run({
+          key: 'scanner_allow_enter_terminator',
+          value: next.scannerAllowEnterTerminator ? '1' : '0',
+          updated_at: now,
+        });
+      }
+      if (next.scannerAllowedCharsPattern) {
+        upsert.run({
+          key: 'scanner_allowed_chars_pattern',
+          value: next.scannerAllowedCharsPattern,
+          updated_at: now,
+        });
+      }
     });
 
     tx();
@@ -262,6 +361,7 @@ export class OrdersRepository {
     printStatus: 'SENT' | 'FAILED';
     printJobId: string | null;
     printError: string | null;
+    printAttempted?: boolean;
   }): { orderId: string; folioText: string; folioNumber: number } {
     const runtime = this.getRuntimeConfig();
     const orderId = randomUUID();
@@ -281,7 +381,7 @@ export class OrdersRepository {
         @id, @created_at, @tenant_id, @kiosk_id, @kiosk_number, @folio_number, @folio_text,
         'PAID', @total_cents, @pago_recibido_cents, @cambio_cents, @metodo_pago,
         @print_status, @print_job_id, @last_error, NULL,
-        1, @last_print_at, NULL, NULL
+        @print_attempt_count, @last_print_at, NULL, NULL
       )
     `);
 
@@ -294,6 +394,7 @@ export class OrdersRepository {
     `);
 
     const tx = this.db.transaction(() => {
+      const printAttempted = input.printAttempted !== false;
       insertOrder.run({
         id: orderId,
         created_at: now,
@@ -309,7 +410,8 @@ export class OrdersRepository {
         print_status: input.printStatus,
         print_job_id: input.printJobId,
         last_error: input.printError,
-        last_print_at: now,
+        print_attempt_count: printAttempted ? 1 : 0,
+        last_print_at: printAttempted ? now : null,
       });
 
       const itemRows = input.lines.map((line) => ({
