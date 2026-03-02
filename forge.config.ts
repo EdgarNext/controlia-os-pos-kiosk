@@ -20,8 +20,20 @@ const config: ForgeConfig = {
   makers: [
     new MakerSquirrel({}),
     new MakerZIP({}, ['darwin']),
-    new MakerRpm({}),
+    //new MakerRpm({}),
     new MakerDeb({}),
+  ],
+   publishers: [
+    {
+      name: '@electron-forge/publisher-github',
+      config: {
+        repository: {
+          owner: 'EdgarNext',
+          name: 'controlia-os-pos-kiosk',
+        },
+        prerelease: true
+      }
+    }
   ],
   plugins: [
     new AutoUnpackNativesPlugin({}),

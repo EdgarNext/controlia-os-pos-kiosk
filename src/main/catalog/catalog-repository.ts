@@ -6,12 +6,14 @@ import type {
   CatalogCategory,
   CatalogItem,
   CatalogSnapshot,
+  PosUserLocal,
 } from '../../shared/catalog';
 
 interface CategoryRow {
   id: string;
   name: string;
   sort_order: number;
+  image_path: string | null;
 }
 
 interface ItemRow {
@@ -22,6 +24,15 @@ interface ItemRow {
   category_id: string;
   image_path: string | null;
   barcode: string | null;
+}
+
+interface PosUserRow {
+  id: string;
+  name: string;
+  pin_hash: string;
+  role: string;
+  is_active: number;
+  updated_at: string;
 }
 
 export class CatalogRepository {
@@ -39,7 +50,8 @@ export class CatalogRepository {
       CREATE TABLE IF NOT EXISTS catalog_categories_local (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
-        sort_order INTEGER NOT NULL DEFAULT 0
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        image_path TEXT
       );
 
       CREATE TABLE IF NOT EXISTS catalog_items_local (
@@ -69,13 +81,35 @@ export class CatalogRepository {
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS pos_users_local (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        pin_hash TEXT NOT NULL,
+        role TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pos_users_local_active
+      ON pos_users_local(is_active, role, name);
     `);
+
+    this.ensureColumn('catalog_categories_local', 'image_path', 'TEXT');
   }
 
-  replaceCatalog(categories: CatalogCategory[], items: CatalogItem[], syncedAt: string): void {
+  private ensureColumn(tableName: string, columnName: string, definition: string): void {
+    const columns = this.db
+      .prepare(`PRAGMA table_info(${tableName})`)
+      .all() as Array<{ name: string }>;
+    if (columns.some((row) => row.name === columnName)) return;
+    this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
+
+  replaceCatalog(categories: CatalogCategory[], items: CatalogItem[], users: PosUserLocal[], syncedAt: string): void {
     const insertCategory = this.db.prepare(`
-      INSERT INTO catalog_categories_local (id, name, sort_order)
-      VALUES (@id, @name, @sort_order)
+      INSERT INTO catalog_categories_local (id, name, sort_order, image_path)
+      VALUES (@id, @name, @sort_order, @image_path)
     `);
 
     const insertItem = this.db.prepare(`
@@ -91,15 +125,22 @@ export class CatalogRepository {
         updated_at = excluded.updated_at
     `);
 
+    const insertPosUser = this.db.prepare(`
+      INSERT INTO pos_users_local (id, name, pin_hash, role, is_active, updated_at)
+      VALUES (@id, @name, @pin_hash, @role, @is_active, @updated_at)
+    `);
+
     const transaction = this.db.transaction(() => {
       this.db.prepare('DELETE FROM catalog_items_local').run();
       this.db.prepare('DELETE FROM catalog_categories_local').run();
+      this.db.prepare('DELETE FROM pos_users_local').run();
 
       categories.forEach((category) => {
         insertCategory.run({
           id: category.id,
           name: category.name,
           sort_order: category.sortOrder,
+          image_path: category.imagePath,
         });
       });
 
@@ -111,6 +152,17 @@ export class CatalogRepository {
           price_cents: item.priceCents,
           category_id: item.categoryId,
           image_path: item.imagePath,
+        });
+      });
+
+      users.forEach((user) => {
+        insertPosUser.run({
+          id: user.id,
+          name: user.name,
+          pin_hash: user.pinHash,
+          role: user.role,
+          is_active: user.isActive ? 1 : 0,
+          updated_at: user.updatedAt,
         });
       });
 
@@ -130,6 +182,7 @@ export class CatalogRepository {
       .prepare(
         `
       SELECT id, name, sort_order
+      ,image_path
       FROM catalog_categories_local
       ORDER BY sort_order ASC, name ASC
     `,
@@ -163,11 +216,23 @@ export class CatalogRepository {
       )
       .get() as { value: string } | undefined;
 
+    const usersRows = this.db
+      .prepare(
+        `
+      SELECT id, name, pin_hash, role, is_active, updated_at
+      FROM pos_users_local
+      WHERE is_active = 1
+      ORDER BY name ASC
+    `,
+      )
+      .all() as PosUserRow[];
+
     return {
       categories: categoriesRows.map((row) => ({
         id: row.id,
         name: row.name,
         sortOrder: row.sort_order,
+        imagePath: row.image_path,
       })),
       items: itemsRows.map((row) => ({
         id: row.id,
@@ -178,8 +243,36 @@ export class CatalogRepository {
         imagePath: row.image_path,
         barcode: row.barcode || null,
       })),
+      users: usersRows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        pinHash: row.pin_hash,
+        role: row.role,
+        isActive: row.is_active === 1,
+        updatedAt: row.updated_at,
+      })),
       lastSyncedAt: syncRow?.value || null,
     };
+  }
+
+  listActivePosUsers(): Array<{ id: string; name: string; role: string; pinHash: string }> {
+    const rows = this.db
+      .prepare(
+        `
+      SELECT id, name, role, pin_hash
+      FROM pos_users_local
+      WHERE is_active = 1
+      ORDER BY name ASC
+    `,
+      )
+      .all() as Array<{ id: string; name: string; role: string; pin_hash: string }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      role: row.role,
+      pinHash: row.pin_hash,
+    }));
   }
 
   assignBarcode(input: AssignBarcodeInput): AssignBarcodeResult {

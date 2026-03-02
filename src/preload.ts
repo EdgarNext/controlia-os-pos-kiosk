@@ -17,6 +17,15 @@ const api: PosKioskElectronApi = {
   setPrintConfig(input) {
     return ipcRenderer.invoke(IPC_CHANNELS.PRINT_CONFIG_SET, input);
   },
+  printerGetDiagnostics() {
+    return ipcRenderer.invoke(IPC_CHANNELS.PRINTER_GET_DIAGNOSTICS);
+  },
+  printerPrintSelfTest(input?: { includeDebugFooter?: boolean }) {
+    return ipcRenderer.invoke(IPC_CHANNELS.PRINTER_PRINT_SELF_TEST, input || {});
+  },
+  printerPrintText(text: string, options?: { includeDebugFooter?: boolean }) {
+    return ipcRenderer.invoke(IPC_CHANNELS.PRINTER_PRINT_TEXT, text, options || {});
+  },
   getCatalog() {
     return ipcRenderer.invoke(IPC_CHANNELS.CATALOG_GET);
   },
@@ -118,6 +127,36 @@ const api: PosKioskElectronApi = {
   },
   setRuntimeConfig(input) {
     return ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_CONFIG_SET, input);
+  },
+  activateDeviceClaim(input) {
+    return ipcRenderer.invoke(IPC_CHANNELS.DEVICE_ACTIVATE_CLAIM, input);
+  },
+  getDeviceActivationState() {
+    return ipcRenderer.invoke(IPC_CHANNELS.DEVICE_ACTIVATION_STATE);
+  },
+  getDeviceBindingInfo() {
+    return ipcRenderer.invoke(IPC_CHANNELS.DEVICE_BINDING_INFO);
+  },
+  resetDeviceBinding() {
+    return ipcRenderer.invoke(IPC_CHANNELS.DEVICE_BINDING_RESET);
+  },
+  listPosUsers() {
+    return ipcRenderer.invoke(IPC_CHANNELS.POS_AUTH_LIST_USERS);
+  },
+  loginPosUser(input) {
+    return ipcRenderer.invoke(IPC_CHANNELS.POS_AUTH_LOGIN, input);
+  },
+  logoutPosUser() {
+    return ipcRenderer.invoke(IPC_CHANNELS.POS_AUTH_LOGOUT);
+  },
+  getPosSession() {
+    return ipcRenderer.invoke(IPC_CHANNELS.POS_AUTH_SESSION_GET);
+  },
+  touchPosSession() {
+    return ipcRenderer.invoke(IPC_CHANNELS.POS_AUTH_TOUCH);
+  },
+  supervisorOverride(input) {
+    return ipcRenderer.invoke(IPC_CHANNELS.POS_AUTH_SUPERVISOR_OVERRIDE, input);
   },
   onScannerData(listener: (reading: ScannerReading) => void) {
     const wrapped = (_event: IpcRendererEvent, reading: ScannerReading) => {

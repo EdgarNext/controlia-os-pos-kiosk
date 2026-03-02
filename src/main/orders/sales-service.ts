@@ -6,6 +6,7 @@ import type {
   ReprintOrderResult,
 } from '../../shared/orders';
 import { PrintService } from '../printing/print-service';
+import { buildEscPosTextPayload } from '../printing/escpos-utils';
 import type { SyncCoordinator } from '../sync/sync-coordinator';
 import { OrdersRepository } from './orders-repository';
 
@@ -64,20 +65,35 @@ export class SalesService {
     }
 
     const cambioCents = pagoRecibidoCents - totalCents;
-    const created = this.ordersRepository.createOrderAndOutbox({
+    let created: { orderId: string; folioText: string };
+    try {
+      created = this.ordersRepository.createOrderAndOutbox({
+        lines,
+        totalCents,
+        pagoRecibidoCents,
+        cambioCents,
+        metodoPago: input.metodoPago || 'efectivo',
+        printStatus: 'FAILED',
+        printJobId: null,
+        printError: 'Print queued',
+        printAttempted: false,
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'No se pudo crear la venta local.',
+      };
+    }
+    this.syncCoordinator.notifyPendingWork('sale');
+
+    const rawBase64 = this.buildTicketRawBase64(
       lines,
       totalCents,
       pagoRecibidoCents,
       cambioCents,
-      metodoPago: input.metodoPago || 'efectivo',
-      printStatus: 'FAILED',
-      printJobId: null,
-      printError: 'Print queued',
-      printAttempted: false,
-    });
-    this.syncCoordinator.notifyPendingWork('sale');
-
-    const rawBase64 = this.buildTicketRawBase64(lines, totalCents, pagoRecibidoCents, cambioCents, created.folioText);
+      input.metodoPago || 'efectivo',
+      created.folioText,
+    );
     try {
       const queued = this.printService.enqueuePrintV2({
         rawBase64,
@@ -88,12 +104,16 @@ export class SalesService {
       });
       this.pendingOrderByPrintJobId.set(queued.jobId, created.orderId);
     } catch (error) {
-      this.ordersRepository.recordReprintAttemptAndOutbox({
-        orderId: created.orderId,
-        printStatus: 'FAILED',
-        printJobId: null,
-        printError: error instanceof Error ? error.message : 'Print queue error',
-      });
+      try {
+        this.ordersRepository.recordReprintAttemptAndOutbox({
+          orderId: created.orderId,
+          printStatus: 'FAILED',
+          printJobId: null,
+          printError: error instanceof Error ? error.message : 'Print queue error',
+        });
+      } catch {
+        // best effort; sale is already persisted locally
+      }
       this.syncCoordinator.notifyPendingWork('auto');
     }
 
@@ -135,26 +155,35 @@ export class SalesService {
       order.totalCents,
       order.pagoRecibidoCents,
       order.cambioCents,
+      order.metodoPago,
       order.folioText,
       order.createdAt,
       true,
     );
 
-    const queued = this.printService.enqueuePrintV2({
-      rawBase64,
-      jobName: `reprint_${order.folioText}_${Date.now()}`,
-      tenantId: order.tenantId,
-      kioskId: order.kioskId,
-      orderId,
-    });
-    this.pendingOrderByPrintJobId.set(queued.jobId, orderId);
-    this.syncCoordinator.notifyPendingWork('auto');
-    return {
-      ok: true,
-      orderId,
-      printStatus: 'SENT',
-      jobId: queued.jobId,
-    };
+    try {
+      const queued = this.printService.enqueuePrintV2({
+        rawBase64,
+        jobName: `reprint_${order.folioText}_${Date.now()}`,
+        tenantId: order.tenantId,
+        kioskId: order.kioskId,
+        orderId,
+      });
+      this.pendingOrderByPrintJobId.set(queued.jobId, orderId);
+      this.syncCoordinator.notifyPendingWork('auto');
+      return {
+        ok: true,
+        orderId,
+        printStatus: 'SENT',
+        jobId: queued.jobId,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        orderId,
+        error: error instanceof Error ? error.message : 'No se pudo encolar reimpresion.',
+      };
+    }
   }
 
   cancelOrder(orderIdRaw: string): CancelOrderResult {
@@ -163,7 +192,12 @@ export class SalesService {
       return { ok: false, orderId: '', error: 'Order id invalido.' };
     }
 
-    const result = this.ordersRepository.cancelOrderAndOutbox(orderId);
+    let result: { ok: boolean; canceledAt?: string; error?: string };
+    try {
+      result = this.ordersRepository.cancelOrderAndOutbox(orderId);
+    } catch (error) {
+      return { ok: false, orderId, error: error instanceof Error ? error.message : 'No se pudo cancelar la orden.' };
+    }
     if (!result.ok) {
       return { ok: false, orderId, error: result.error || 'No se pudo cancelar la orden.' };
     }
@@ -181,34 +215,28 @@ export class SalesService {
     totalCents: number,
     pagoRecibidoCents: number,
     cambioCents: number,
+    metodoPago: string,
     folioText?: string,
     createdAtIso?: string,
     isReprint = false,
   ): string {
-    const encoder = new TextEncoder();
-    const ESC = 0x1b;
-    const GS = 0x1d;
-
-    const rows: number[] = [ESC, 0x40, ESC, 0x61, 0x01];
-    rows.push(...Array.from(encoder.encode('KIOSK POS\n')));
-    rows.push(...Array.from(encoder.encode(isReprint ? 'REIMPRESION\n' : 'Ticket de venta\n')));
-    rows.push(ESC, 0x61, 0x00);
-    rows.push(...Array.from(encoder.encode(`${formatDateTimeMx(new Date().toISOString())}\n`)));
+    const headerLines: string[] = ['KIOSK POS', isReprint ? 'REIMPRESION' : 'Ticket de venta', `${formatDateTimeMx(new Date().toISOString())}`];
     if (folioText) {
-      rows.push(...Array.from(encoder.encode(`Folio: ${folioText}\n`)));
+      headerLines.push(`Folio: ${folioText}`);
     }
     if (createdAtIso && isReprint) {
-      rows.push(...Array.from(encoder.encode(`Venta original: ${formatDateTimeMx(createdAtIso)}\n`)));
+      headerLines.push(`Venta original: ${formatDateTimeMx(createdAtIso)}`);
     }
-    rows.push(...Array.from(encoder.encode('------------------------------\n')));
+    headerLines.push('------------------------------');
 
+    const itemLines: string[] = [];
     lines.forEach((line) => {
       const lineTotal = new Intl.NumberFormat('es-MX', {
         style: 'currency',
         currency: 'MXN',
         minimumFractionDigits: 0,
       }).format((line.unitPriceCents * line.qty) / 100);
-      rows.push(...Array.from(encoder.encode(`${line.qty}x ${line.name} ${lineTotal}\n`)));
+      itemLines.push(`${line.qty}x ${line.name} ${lineTotal}`);
     });
 
     const money = (cents: number) =>
@@ -218,20 +246,23 @@ export class SalesService {
         minimumFractionDigits: 0,
       }).format(cents / 100);
 
-    rows.push(...Array.from(encoder.encode('------------------------------\n')));
-    rows.push(...Array.from(encoder.encode(`TOTAL: ${money(totalCents)}\n`)));
-    rows.push(...Array.from(encoder.encode(`RECIBIDO: ${money(pagoRecibidoCents)}\n`)));
-    rows.push(...Array.from(encoder.encode(`CAMBIO: ${money(cambioCents)}\n`)));
-    rows.push(...Array.from(encoder.encode('\n\n\n')));
-    rows.push(GS, 0x56, 0x00);
-
-    const bytes = new Uint8Array(rows);
-    let binary = '';
-    bytes.forEach((value) => {
-      binary += String.fromCharCode(value);
-    });
-    return btoa(binary);
+    const footerLines = [
+      '------------------------------',
+      `TOTAL: ${money(totalCents)}`,
+      `METODO: ${formatPaymentMethod(metodoPago)}`,
+      `RECIBIDO: ${money(pagoRecibidoCents)}`,
+      `CAMBIO: ${money(cambioCents)}`,
+    ];
+    const payload = buildEscPosTextPayload([...headerLines, ...itemLines, ...footerLines].join('\n'));
+    return payload.toString('base64');
   }
+}
+
+function formatPaymentMethod(value: string): string {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'tarjeta') return 'Tarjeta de credito';
+  if (normalized === 'efectivo') return 'Efectivo';
+  return normalized ? normalized : 'Efectivo';
 }
 
 function formatDateTimeMx(value: string): string {

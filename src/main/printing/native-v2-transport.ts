@@ -7,10 +7,13 @@ import { promisify } from 'node:util';
 import type { PrintV2Request } from '../../shared/print-v2';
 import type { PrintTransport } from './print-transport';
 import { PrintJobsRepository } from './print-jobs-repository';
+import { writeBufferToLinuxPrinterDevice } from './linux-printer-device';
 
 const execFileAsync = promisify(execFile);
 
 export class NativeV2Transport implements PrintTransport {
+  private linuxWriteMutex: Promise<void> = Promise.resolve();
+
   constructor(private readonly jobsRepository: PrintJobsRepository) {}
 
   async send(request: PrintV2Request): Promise<void> {
@@ -34,21 +37,14 @@ export class NativeV2Transport implements PrintTransport {
 
   private async sendLinux(rawBuffer: Buffer, jobName?: string): Promise<void> {
     const config = this.jobsRepository.getPrintConfig();
-    const tmpPath = await this.writeTempFile(rawBuffer);
-
-    try {
-      const args = ['-d', config.linuxPrinterName, '-o', 'raw'];
-      if (jobName) {
-        args.push('-t', String(jobName));
-      }
-      args.push(tmpPath);
-
-      await execFileAsync('lp', args, { encoding: 'utf8' });
-    } catch (error) {
-      throw this.normalizeExecError(error, 'lp failed');
-    } finally {
-      await this.safeUnlink(tmpPath);
-    }
+    await this.withLinuxWriteLock(async () => {
+      const resolvedPath = await writeBufferToLinuxPrinterDevice(rawBuffer, config.linuxPrinterDevicePath);
+      console.info('[print] linux-direct-device sent', {
+        devicePath: resolvedPath,
+        bytes: rawBuffer.length,
+        jobName: jobName || 'unnamed',
+      });
+    });
   }
 
   private async sendWindows(rawBuffer: Buffer): Promise<void> {
@@ -90,5 +86,14 @@ export class NativeV2Transport implements PrintTransport {
       return new Error(message || fallback);
     }
     return new Error(fallback);
+  }
+
+  private async withLinuxWriteLock<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.linuxWriteMutex.then(run, run);
+    this.linuxWriteMutex = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
   }
 }

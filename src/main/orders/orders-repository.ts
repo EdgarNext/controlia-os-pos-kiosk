@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { OrderHistoryRecord, RuntimeConfig, SaleLineInput } from '../../shared/orders';
+import type { OrderHistoryRecord, PosSessionView, RuntimeConfig, SaleLineInput } from '../../shared/orders';
 
 type OutboxStatus = 'PENDING' | 'SENT' | 'FAILED';
 
@@ -185,6 +185,7 @@ export class OrdersRepository {
           'tenant_id',
           'kiosk_id',
           'kiosk_number',
+          'kiosk_display_name',
           'tenant_slug',
           'device_id',
           'device_secret',
@@ -195,7 +196,14 @@ export class OrdersRepository {
           'scanner_scan_end_gap_ms',
           'scanner_human_key_gap_ms',
           'scanner_allow_enter_terminator',
-          'scanner_allowed_chars_pattern'
+          'scanner_allowed_chars_pattern',
+          'touch_screen_enabled',
+          'pos_session_timeout_minutes',
+          'pos_session_user_id',
+          'pos_session_user_name',
+          'pos_session_role',
+          'pos_session_started_at',
+          'pos_session_last_activity_at'
         )`,
       )
       .all() as Array<{ key: string; value: string }>;
@@ -207,6 +215,7 @@ export class OrdersRepository {
       tenantId: map.get('tenant_id') || null,
       kioskId: map.get('kiosk_id') || null,
       kioskNumber: Number.isFinite(kioskNumberParsed) ? kioskNumberParsed : null,
+      kioskDisplayName: map.get('kiosk_display_name') || null,
       tenantSlug: map.get('tenant_slug') || null,
       deviceId: map.get('device_id') || null,
       deviceSecret: map.get('device_secret') || null,
@@ -218,6 +227,13 @@ export class OrdersRepository {
       scannerHumanKeyGapMs: parseNullableInt(map.get('scanner_human_key_gap_ms')),
       scannerAllowEnterTerminator: parseNullableBoolean(map.get('scanner_allow_enter_terminator')),
       scannerAllowedCharsPattern: map.get('scanner_allowed_chars_pattern') || null,
+      touchScreenEnabled: parseNullableBoolean(map.get('touch_screen_enabled')),
+      posSessionTimeoutMinutes: parseNullableInt(map.get('pos_session_timeout_minutes')),
+      posSessionUserId: map.get('pos_session_user_id') || null,
+      posSessionUserName: map.get('pos_session_user_name') || null,
+      posSessionRole: map.get('pos_session_role') || null,
+      posSessionStartedAt: map.get('pos_session_started_at') || null,
+      posSessionLastActivityAt: map.get('pos_session_last_activity_at') || null,
     };
   }
 
@@ -233,6 +249,10 @@ export class OrdersRepository {
           ? input.kioskId.trim()
           : current.kioskId,
       kioskNumber: Number.isFinite(input.kioskNumber) ? Number(input.kioskNumber) : current.kioskNumber,
+      kioskDisplayName:
+        typeof input.kioskDisplayName === 'string' && input.kioskDisplayName.trim()
+          ? input.kioskDisplayName.trim()
+          : current.kioskDisplayName,
       tenantSlug:
         typeof input.tenantSlug === 'string' && input.tenantSlug.trim()
           ? input.tenantSlug.trim()
@@ -271,6 +291,19 @@ export class OrdersRepository {
         typeof input.scannerAllowedCharsPattern === 'string' && input.scannerAllowedCharsPattern.trim()
           ? input.scannerAllowedCharsPattern.trim()
           : current.scannerAllowedCharsPattern,
+      touchScreenEnabled:
+        typeof input.touchScreenEnabled === 'boolean'
+          ? input.touchScreenEnabled
+          : current.touchScreenEnabled,
+      posSessionTimeoutMinutes:
+        Number.isInteger(input.posSessionTimeoutMinutes) && Number(input.posSessionTimeoutMinutes) > 0
+          ? Number(input.posSessionTimeoutMinutes)
+          : current.posSessionTimeoutMinutes,
+      posSessionUserId: current.posSessionUserId,
+      posSessionUserName: current.posSessionUserName,
+      posSessionRole: current.posSessionRole,
+      posSessionStartedAt: current.posSessionStartedAt,
+      posSessionLastActivityAt: current.posSessionLastActivityAt,
     };
 
     const now = new Date().toISOString();
@@ -291,6 +324,9 @@ export class OrdersRepository {
       }
       if (Number.isFinite(next.kioskNumber)) {
         upsert.run({ key: 'kiosk_number', value: String(next.kioskNumber), updated_at: now });
+      }
+      if (next.kioskDisplayName) {
+        upsert.run({ key: 'kiosk_display_name', value: next.kioskDisplayName, updated_at: now });
       }
       if (next.tenantSlug) {
         upsert.run({ key: 'tenant_slug', value: next.tenantSlug, updated_at: now });
@@ -337,10 +373,132 @@ export class OrdersRepository {
           updated_at: now,
         });
       }
+      if (typeof next.touchScreenEnabled === 'boolean') {
+        upsert.run({
+          key: 'touch_screen_enabled',
+          value: next.touchScreenEnabled ? '1' : '0',
+          updated_at: now,
+        });
+      }
+      if (Number.isInteger(next.posSessionTimeoutMinutes) && Number(next.posSessionTimeoutMinutes) > 0) {
+        upsert.run({
+          key: 'pos_session_timeout_minutes',
+          value: String(next.posSessionTimeoutMinutes),
+          updated_at: now,
+        });
+      }
     });
 
     tx();
     return next;
+  }
+
+  getPosSessionTimeoutMinutes(): number {
+    const runtime = this.getRuntimeConfig();
+    const configured = Number(runtime.posSessionTimeoutMinutes || 0);
+    if (Number.isInteger(configured) && configured > 0) return configured;
+    return 30;
+  }
+
+  getPosSession(): PosSessionView | null {
+    const runtime = this.getRuntimeConfig();
+    if (!runtime.posSessionUserId || !runtime.posSessionUserName || !runtime.posSessionRole || !runtime.posSessionStartedAt) {
+      return null;
+    }
+    return {
+      userId: runtime.posSessionUserId,
+      userName: runtime.posSessionUserName,
+      role: runtime.posSessionRole,
+      startedAt: runtime.posSessionStartedAt,
+      lastActivityAt: runtime.posSessionLastActivityAt || runtime.posSessionStartedAt,
+      timeoutMinutes: this.getPosSessionTimeoutMinutes(),
+    };
+  }
+
+  setPosSession(input: { userId: string; userName: string; role: string; startedAt?: string; lastActivityAt?: string }): PosSessionView {
+    const now = new Date().toISOString();
+    const startedAt = input.startedAt || now;
+    const lastActivityAt = input.lastActivityAt || now;
+    const upsert = this.db.prepare(`
+      INSERT INTO app_runtime_config(key, value, updated_at)
+      VALUES (@key, @value, @updated_at)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at
+    `);
+
+    const tx = this.db.transaction(() => {
+      upsert.run({ key: 'pos_session_user_id', value: input.userId, updated_at: now });
+      upsert.run({ key: 'pos_session_user_name', value: input.userName, updated_at: now });
+      upsert.run({ key: 'pos_session_role', value: input.role, updated_at: now });
+      upsert.run({ key: 'pos_session_started_at', value: startedAt, updated_at: now });
+      upsert.run({ key: 'pos_session_last_activity_at', value: lastActivityAt, updated_at: now });
+    });
+    tx();
+
+    return {
+      userId: input.userId,
+      userName: input.userName,
+      role: input.role,
+      startedAt,
+      lastActivityAt,
+      timeoutMinutes: this.getPosSessionTimeoutMinutes(),
+    };
+  }
+
+  touchPosSession(): void {
+    const session = this.getPosSession();
+    if (!session) return;
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `
+        INSERT INTO app_runtime_config(key, value, updated_at)
+        VALUES ('pos_session_last_activity_at', @value, @updated_at)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `,
+      )
+      .run({ value: now, updated_at: now });
+  }
+
+  clearPosSession(): void {
+    this.db
+      .prepare(
+        `
+        DELETE FROM app_runtime_config
+        WHERE key IN (
+          'pos_session_user_id',
+          'pos_session_user_name',
+          'pos_session_role',
+          'pos_session_started_at',
+          'pos_session_last_activity_at'
+        )
+      `,
+      )
+      .run();
+  }
+
+  clearDeviceBinding(): RuntimeConfig {
+    this.db
+      .prepare(
+        `
+        DELETE FROM app_runtime_config
+        WHERE key IN (
+          'tenant_id',
+          'kiosk_id',
+          'kiosk_number',
+          'kiosk_display_name',
+          'tenant_slug',
+          'device_id',
+          'device_secret'
+        )
+      `,
+      )
+      .run();
+
+    return this.getRuntimeConfig();
   }
 
   nextFolioForKiosk(kioskNumber: number): { folioNumber: number; folioText: string } {
@@ -843,11 +1001,14 @@ export class OrdersRepository {
     const order = this.getOrderRow(orderId);
     if (!order) throw new Error('Order not found while enqueueing sale create mutation.');
     const items = this.getOrderItems(orderId);
+    const session = this.getPosSession();
+    if (!session) throw new Error('POS session is required to enqueue SALE_CREATE mutation.');
 
     const payload = {
       mutation_id: randomUUID(),
       type: 'SALE_CREATE',
       order_id: order.id,
+      user_id: session.userId,
       kiosk_id: order.kiosk_id,
       folio_number: order.folio_number,
       folio_text: order.folio_text,
@@ -886,10 +1047,13 @@ export class OrdersRepository {
   private enqueueSaleReprintMutation(orderId: string, now: string): void {
     const order = this.getOrderRow(orderId);
     if (!order) throw new Error('Order not found while enqueueing sale reprint mutation.');
+    const session = this.getPosSession();
+    if (!session) throw new Error('POS session is required to enqueue SALE_REPRINT mutation.');
     const payload = {
       mutation_id: randomUUID(),
       type: 'SALE_REPRINT',
       order_id: order.id,
+      user_id: session.userId,
       kiosk_id: order.kiosk_id,
       print_status: order.print_status,
       print_attempt_count: order.print_attempt_count,
@@ -914,10 +1078,13 @@ export class OrdersRepository {
   private enqueueSaleCancelMutation(orderId: string, now: string): void {
     const order = this.getOrderRow(orderId);
     if (!order) throw new Error('Order not found while enqueueing sale cancel mutation.');
+    const session = this.getPosSession();
+    if (!session) throw new Error('POS session is required to enqueue SALE_CANCEL mutation.');
     const payload = {
       mutation_id: randomUUID(),
       type: 'SALE_CANCEL',
       order_id: order.id,
+      user_id: session.userId,
       kiosk_id: order.kiosk_id,
       canceled_at: order.canceled_at,
       cancel_reason: order.cancel_reason,

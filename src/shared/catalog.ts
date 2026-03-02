@@ -2,6 +2,7 @@ export interface CatalogCategory {
   id: string;
   name: string;
   sortOrder: number;
+  imagePath: string | null;
 }
 
 export interface CatalogItem {
@@ -14,9 +15,19 @@ export interface CatalogItem {
   barcode: string | null;
 }
 
+export interface PosUserLocal {
+  id: string;
+  name: string;
+  pinHash: string;
+  role: string;
+  isActive: boolean;
+  updatedAt: string;
+}
+
 export interface CatalogSnapshot {
   categories: CatalogCategory[];
   items: CatalogItem[];
+  users: PosUserLocal[];
   lastSyncedAt: string | null;
 }
 

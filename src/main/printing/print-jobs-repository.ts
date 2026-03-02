@@ -7,6 +7,7 @@ import type {
   PrintJobStatus,
   PrintV2Request,
 } from '../../shared/print-v2';
+import { DEFAULT_LINUX_PRINTER_DEVICE_PATH } from './linux-printer-device';
 
 interface PrintJobRow {
   id: string;
@@ -21,7 +22,6 @@ interface PrintJobRow {
   last_error: string | null;
 }
 
-const DEFAULT_LINUX_PRINTER_NAME = 'POS58';
 const DEFAULT_WINDOWS_PRINTER_SHARE = '\\\\localhost\\\\POS58';
 
 export class PrintJobsRepository {
@@ -59,6 +59,25 @@ export class PrintJobsRepository {
         value TEXT NOT NULL
       );
     `);
+    this.ensurePrintConfigMigration();
+  }
+
+  private ensurePrintConfigMigration(): void {
+    const get = this.db.prepare(`SELECT value FROM app_settings WHERE key = ?`);
+    const upsert = this.db.prepare(`
+      INSERT INTO app_settings(key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `);
+
+    const transaction = this.db.transaction(() => {
+      const hasDevicePath = get.get('linux_printer_device_path') as { value: string } | undefined;
+      if (!hasDevicePath?.value) {
+        upsert.run('linux_printer_device_path', DEFAULT_LINUX_PRINTER_DEVICE_PATH);
+      }
+      // Legacy linux_printer_name is intentionally ignored by design.
+    });
+    transaction();
   }
 
   enqueue(input: PrintV2Request): PrintJobRecord {
@@ -186,17 +205,17 @@ export class PrintJobsRepository {
     const statement = this.db.prepare(`
       SELECT key, value
       FROM app_settings
-      WHERE key IN ('linux_printer_name', 'windows_printer_share')
+      WHERE key IN ('linux_printer_device_path', 'windows_printer_share')
     `);
 
     const rows = statement.all() as Array<{ key: string; value: string }>;
     const map = new Map(rows.map((row) => [row.key, row.value]));
 
     return {
-      linuxPrinterName:
-        map.get('linux_printer_name') ||
-        process.env.PRINTER_NAME ||
-        DEFAULT_LINUX_PRINTER_NAME,
+      linuxPrinterDevicePath:
+        map.get('linux_printer_device_path') ||
+        process.env.PRINTER_DEVICE_PATH ||
+        DEFAULT_LINUX_PRINTER_DEVICE_PATH,
       windowsPrinterShare:
         map.get('windows_printer_share') ||
         process.env.PRINTER_SHARE ||
@@ -207,10 +226,10 @@ export class PrintJobsRepository {
   setPrintConfig(input: Partial<PrintConfig>): PrintConfig {
     const current = this.getPrintConfig();
     const next: PrintConfig = {
-      linuxPrinterName:
-        typeof input.linuxPrinterName === 'string' && input.linuxPrinterName.trim()
-          ? input.linuxPrinterName.trim()
-          : current.linuxPrinterName,
+      linuxPrinterDevicePath:
+        typeof input.linuxPrinterDevicePath === 'string' && input.linuxPrinterDevicePath.trim()
+          ? input.linuxPrinterDevicePath.trim()
+          : current.linuxPrinterDevicePath,
       windowsPrinterShare:
         typeof input.windowsPrinterShare === 'string' &&
         input.windowsPrinterShare.trim()
@@ -226,8 +245,8 @@ export class PrintJobsRepository {
 
     const transaction = this.db.transaction(() => {
       upsert.run({
-        key: 'linux_printer_name',
-        value: next.linuxPrinterName,
+        key: 'linux_printer_device_path',
+        value: next.linuxPrinterDevicePath,
       });
       upsert.run({
         key: 'windows_printer_share',

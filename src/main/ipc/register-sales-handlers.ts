@@ -40,14 +40,21 @@ import { SalesService } from '../orders/sales-service';
 import { OpenTabsAppService } from '../sales-pos/open-tabs-app-service';
 import type { SyncCoordinator } from '../sync/sync-coordinator';
 import type { SyncRequestMode } from '../sync/types';
+import { PosAuthService } from '../auth/pos-auth-service';
 
 export function registerSalesHandlers(
   ordersRepository: OrdersRepository,
   salesService: SalesService,
   openTabsAppService: OpenTabsAppService,
   syncCoordinator: SyncCoordinator,
+  posAuthService: PosAuthService,
 ): void {
   const createSaleHandler = async (_event: unknown, input: CreateSaleInput): Promise<CreateSaleResult> => {
+    const session = posAuthService.getSession();
+    if (!session) {
+      return { ok: false, error: 'Login requerido para vender.' };
+    }
+    posAuthService.touchSession();
     return salesService.createSaleAndPrint(input);
   };
 
@@ -64,10 +71,20 @@ export function registerSalesHandlers(
   });
 
   ipcMain.handle(IPC_CHANNELS.ORDER_REPRINT, async (_event, orderId: string): Promise<ReprintOrderResult> => {
+    const session = posAuthService.getSession();
+    if (!session) {
+      return { ok: false, orderId: String(orderId || ''), error: 'Login requerido para reimprimir.' };
+    }
+    posAuthService.touchSession();
     return salesService.reprintOrder(orderId);
   });
 
   ipcMain.handle(IPC_CHANNELS.ORDER_CANCEL, async (_event, orderId: string): Promise<CancelOrderResult> => {
+    const session = posAuthService.getSession();
+    if (!session) {
+      return { ok: false, orderId: String(orderId || ''), error: 'Login requerido para cancelar.' };
+    }
+    posAuthService.touchSession();
     return salesService.cancelOrder(orderId);
   });
 

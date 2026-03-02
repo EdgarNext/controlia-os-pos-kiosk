@@ -1,7 +1,7 @@
 {
   "name": "pos-kiosk",
   "productName": "pos-kiosk",
-  "version": "1.0.0",
+  "version": "1.5.0",
   "description": "Point of Sale - offline",
   "main": ".vite/build/main.js",
   "private": true,
@@ -14,7 +14,7 @@
   },
   "keywords": [],
   "author": {
-    "name": "EdgarNext",
+    "name": "Controlia Digital",
     "email": "edgarnextapps@gmail.com"
   },
   "license": "MIT",
@@ -27,6 +27,7 @@
     "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
     "@electron-forge/plugin-fuses": "^7.11.1",
     "@electron-forge/plugin-vite": "^7.11.1",
+    "@electron-forge/publisher-github": "^7.11.1",
     "@electron/fuses": "^1.8.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/electron-squirrel-startup": "^1.0.2",

@@ -40,6 +40,12 @@ export interface KitchenRoundView {
   fromVersion: number;
   ok: boolean;
   linesCount: number;
+  lines: Array<{
+    productId: string;
+    name: string;
+    qty: number;
+    notes: string | null;
+  }>;
   createdAt: string;
   status: 'PENDING' | 'SENT' | 'ACKED' | 'FAILED' | 'CONFLICT';
   error: string | null;

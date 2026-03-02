@@ -56,6 +56,7 @@ export function createScanCapture(input: CreateScanCaptureInput): ScanCaptureApi
   let lastKeyAt = 0;
   let interKeyGaps: number[] = [];
   let flushTimer: NodeJS.Timeout | null = null;
+  let destroyed = false;
   const recentScans: ScannerReading[] = [];
   const logs: ScanCaptureLogEntry[] = [];
 
@@ -279,7 +280,11 @@ export function createScanCapture(input: CreateScanCaptureInput): ScanCaptureApi
       };
     },
     destroy(): void {
-      input.win.webContents.removeListener('before-input-event', onBeforeInputEvent);
+      if (destroyed) return;
+      destroyed = true;
+      if (!input.win.isDestroyed() && !input.win.webContents.isDestroyed()) {
+        input.win.webContents.removeListener('before-input-event', onBeforeInputEvent);
+      }
       resetBuffer();
     },
   };

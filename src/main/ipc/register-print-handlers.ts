@@ -2,6 +2,8 @@ import { ipcMain } from 'electron';
 import { IPC_CHANNELS } from '../../shared/ipc-channels';
 import type {
   PrintConfig,
+  PrinterDebugTextOptions,
+  PrinterDiagnostics,
   PrintV2Request,
   PrintV2Response,
   PrintJobRecord,
@@ -28,6 +30,24 @@ export function registerPrintHandlers(printService: PrintService): void {
     IPC_CHANNELS.PRINT_CONFIG_SET,
     async (_event, input: Partial<PrintConfig>): Promise<PrintConfig> => {
       return printService.setPrintConfig(input || {});
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.PRINTER_GET_DIAGNOSTICS, async (): Promise<PrinterDiagnostics> => {
+    return printService.getPrinterDiagnostics();
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.PRINTER_PRINT_SELF_TEST,
+    async (_event, input?: { includeDebugFooter?: boolean }): Promise<PrintV2Response> => {
+      return printService.printerPrintSelfTest(Boolean(input?.includeDebugFooter));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.PRINTER_PRINT_TEXT,
+    async (_event, text: string, options?: PrinterDebugTextOptions): Promise<PrintV2Response> => {
+      return printService.printerPrintText(text, options || {});
     },
   );
 }

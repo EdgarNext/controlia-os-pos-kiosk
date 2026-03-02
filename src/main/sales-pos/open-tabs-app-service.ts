@@ -35,6 +35,7 @@ import type {
 import { CatalogRepository } from '../catalog/catalog-repository';
 import { OrdersRepository } from '../orders/orders-repository';
 import { PrintService } from '../printing/print-service';
+import { buildEscPosTextPayload } from '../printing/escpos-utils';
 
 interface OpenTabsAppServiceInput {
   userDataPath: string;
@@ -419,7 +420,6 @@ export class OpenTabsAppService {
       const rawBase64 = this.buildKitchenRoundRawBase64({
         title: 'REIMPRESION COMANDA',
         folioText: tab.folioText,
-        printedVersion: round.printedVersion,
         lines: round.lines,
       });
 
@@ -463,7 +463,6 @@ export class OpenTabsAppService {
       const rawBase64 = this.buildKitchenRoundRawBase64({
         title: 'CANCELACION COMANDA',
         folioText: tab.folioText,
-        printedVersion: round.printedVersion,
         lines: round.lines,
       });
 
@@ -652,7 +651,6 @@ export class OpenTabsAppService {
     const content = [
       'COMANDA COCINA',
       `TAB: ${detail.tab.folioText}`,
-      `VERSION: ${detail.tab.tabVersionLocal}`,
       '--------------------',
       lines || 'Sin nuevos items',
       '--------------------',
@@ -660,14 +658,12 @@ export class OpenTabsAppService {
       '\n\n\n',
     ].join('\n');
 
-    const bytes = Buffer.from(content, 'utf8');
-    return bytes.toString('base64');
+    return buildEscPosTextPayload(content).toString('base64');
   }
 
   private buildKitchenRoundRawBase64(input: {
     title: string;
     folioText: string;
-    printedVersion: number;
     lines: Array<{ name: string; qty: number; notes: string | null }>;
   }): string {
     const lines = input.lines
@@ -676,14 +672,13 @@ export class OpenTabsAppService {
     const content = [
       input.title,
       `TAB: ${input.folioText}`,
-      `VERSION: ${input.printedVersion}`,
       '--------------------',
       lines || 'Sin lineas',
       '--------------------',
       formatDateTimeMx(new Date().toISOString()),
       '\n\n\n',
     ].join('\n');
-    return Buffer.from(content, 'utf8').toString('base64');
+    return buildEscPosTextPayload(content).toString('base64');
   }
 
   private buildFinalTicketRawBase64(
@@ -718,12 +713,12 @@ export class OpenTabsAppService {
       lines || 'Sin lineas',
       '------------------------------',
       `TOTAL: ${formatMoney(totalCents)}`,
-      `METODO: ${metodoPago.toUpperCase()}`,
+      `METODO: ${formatPaymentMethod(metodoPago)}`,
       `PAGO: ${formatMoney(pagoRecibidoCents)}`,
       `CAMBIO: ${formatMoney(cambioCents)}`,
-      '\n\n\n',
+      '\n\n\n\n\n',
     ].join('\n');
-    return Buffer.from(content, 'utf8').toString('base64');
+    return buildEscPosTextPayload(content).toString('base64');
   }
 
   private buildKitchenRoundLines(detail: TabDetailView): Array<{ name: string; qty: number; notes: string | null }> {
@@ -750,6 +745,7 @@ export class OpenTabsAppService {
   }
 
   private buildKitchenRounds(tenantId: string, tabId: string): KitchenRoundView[] {
+    const catalogById = new Map(this.catalogRepository.getCatalogSnapshot().items.map((item) => [item.id, item.name]));
     const cancellations = this.kitchenRoundActionsRepo.listCancellationsByTab(tenantId, tabId);
     const cancellationByMutationId = new Map(cancellations.map((row) => [row.roundMutationId, row]));
     return this.outboxRepo
@@ -759,18 +755,45 @@ export class OpenTabsAppService {
         let fromVersion = 0;
         let ok = true;
         let linesCount = 0;
+        let lines: Array<{ productId: string; name: string; qty: number; notes: string | null }> = [];
         let error: string | null = row.lastError ?? null;
         try {
           const payload = JSON.parse(row.payloadJson) as {
             printed_version?: unknown;
             ok?: unknown;
             error?: unknown;
-            meta?: { from_version?: unknown; round?: { lines?: unknown[] } };
+            meta?: {
+              from_version?: unknown;
+              round?: {
+                lines?: Array<{
+                  product_id?: unknown;
+                  qty?: unknown;
+                  notes?: unknown;
+                }>;
+              };
+            };
           };
           printedVersion = Number(payload.printed_version) || 0;
           fromVersion = Number(payload.meta?.from_version) || 0;
           ok = payload.ok !== false;
-          linesCount = Array.isArray(payload.meta?.round?.lines) ? payload.meta?.round?.lines.length : 0;
+          lines = Array.isArray(payload.meta?.round?.lines)
+            ? payload.meta.round.lines
+                .map((line) => {
+                  const productId = String(line.product_id || '').trim();
+                  const qty = Number(line.qty) || 0;
+                  if (!productId || qty <= 0) return null;
+                  return {
+                    productId,
+                    name: catalogById.get(productId) || productId,
+                    qty,
+                    notes: line.notes ? String(line.notes) : null,
+                  };
+                })
+                .filter((line): line is { productId: string; name: string; qty: number; notes: string | null } =>
+                  Boolean(line),
+                )
+            : [];
+          linesCount = lines.length;
           if (typeof payload.error === 'string' && payload.error.trim()) {
             error = payload.error.trim();
           }
@@ -785,6 +808,7 @@ export class OpenTabsAppService {
           fromVersion,
           ok,
           linesCount,
+          lines,
           createdAt: row.createdAt,
           status: row.status,
           error,
@@ -869,4 +893,8 @@ function formatDateTimeMx(value: string): string {
     timeStyle: 'short',
     hour12: false,
   }).format(date);
+}
+
+function formatPaymentMethod(value: 'efectivo' | 'tarjeta'): string {
+  return value === 'tarjeta' ? 'Tarjeta de credito' : 'Efectivo';
 }

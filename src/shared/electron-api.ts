@@ -1,4 +1,11 @@
-import type { PrintConfig, PrintJobRecord, PrintV2Request, PrintV2Response } from './print-v2';
+import type {
+  PrintConfig,
+  PrinterDebugTextOptions,
+  PrinterDiagnostics,
+  PrintJobRecord,
+  PrintV2Request,
+  PrintV2Response,
+} from './print-v2';
 import type {
   AssignBarcodeInput,
   AssignBarcodeResult,
@@ -9,11 +16,22 @@ import type {
   CancelOrderResult,
   CreateSaleInput,
   CreateSaleResult,
+  DeviceActivationState,
+  DeviceBindingInfo,
+  DeviceBindingResetResult,
+  DeviceClaimActivateInput,
+  DeviceClaimActivateResult,
   OrderHistoryRecord,
   OutboxSyncResult,
   OutboxSyncStatus,
+  PosLoginInput,
+  PosLoginResult,
+  PosSessionView,
+  PosUserView,
   ReprintOrderResult,
   RuntimeConfig,
+  SupervisorOverrideInput,
+  SupervisorOverrideResult,
 } from './orders';
 import type {
   HidScannerSettings,
@@ -51,6 +69,9 @@ export interface PosKioskElectronApi {
   listPrintJobs(limit?: number): Promise<PrintJobRecord[]>;
   getPrintConfig(): Promise<PrintConfig>;
   setPrintConfig(input: Partial<PrintConfig>): Promise<PrintConfig>;
+  printerGetDiagnostics(): Promise<PrinterDiagnostics>;
+  printerPrintSelfTest(input?: { includeDebugFooter?: boolean }): Promise<PrintV2Response>;
+  printerPrintText(text: string, options?: PrinterDebugTextOptions): Promise<PrintV2Response>;
   getCatalog(): Promise<CatalogSnapshot>;
   syncCatalog(): Promise<CatalogSyncResult>;
   assignProductBarcode(input: AssignBarcodeInput): Promise<AssignBarcodeResult>;
@@ -83,6 +104,16 @@ export interface PosKioskElectronApi {
   isPosMaster(): Promise<boolean>;
   getRuntimeConfig(): Promise<RuntimeConfig>;
   setRuntimeConfig(input: Partial<RuntimeConfig>): Promise<RuntimeConfig>;
+  activateDeviceClaim(input: DeviceClaimActivateInput): Promise<DeviceClaimActivateResult>;
+  getDeviceActivationState(): Promise<DeviceActivationState>;
+  getDeviceBindingInfo(): Promise<DeviceBindingInfo>;
+  resetDeviceBinding(): Promise<DeviceBindingResetResult>;
+  listPosUsers(): Promise<PosUserView[]>;
+  loginPosUser(input: PosLoginInput): Promise<PosLoginResult>;
+  logoutPosUser(): Promise<{ ok: boolean }>;
+  getPosSession(): Promise<PosSessionView | null>;
+  touchPosSession(): Promise<PosSessionView | null>;
+  supervisorOverride(input: SupervisorOverrideInput): Promise<SupervisorOverrideResult>;
   onScannerData(listener: (reading: ScannerReading) => void): () => void;
 }
 

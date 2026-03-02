@@ -1,5 +1,7 @@
 import type {
   PrintConfig,
+  PrinterDebugTextOptions,
+  PrinterDiagnostics,
   PrintJobRecord,
   PrintJobStatus,
   PrintV2Request,
@@ -7,6 +9,8 @@ import type {
 } from '../../shared/print-v2';
 import type { PrintTransport } from './print-transport';
 import { PrintJobsRepository } from './print-jobs-repository';
+import { buildEscPosTextPayload, normalizeEscPosPayload } from './escpos-utils';
+import { getLinuxPrinterDiagnostics } from './linux-printer-device';
 
 export class PrintService {
   private processing = false;
@@ -34,8 +38,9 @@ export class PrintService {
       throw new Error('rawBase64 is required');
     }
 
-    const job = this.jobsRepository.enqueue(request);
-    this.queue.push({ request, jobId: job.id });
+    const normalizedRequest = this.normalizeRequest(request);
+    const job = this.jobsRepository.enqueue(normalizedRequest);
+    this.queue.push({ request: normalizedRequest, jobId: job.id });
     void this.processQueue();
     return { jobId: job.id };
   }
@@ -57,9 +62,11 @@ export class PrintService {
         try {
           await this.transport.send(next.request);
           this.jobsRepository.markSent(next.jobId);
+          console.info('[print] job sent', { jobId: next.jobId, jobName: next.request.jobName || 'unnamed' });
           this.emit({ jobId: next.jobId, status: 'SENT' });
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Print error';
+          console.error('[print] job failed', { jobId: next.jobId, error: message });
           this.jobsRepository.markFailed(next.jobId, message);
           this.emit({ jobId: next.jobId, status: 'FAILED', error: message });
         }
@@ -93,5 +100,81 @@ export class PrintService {
 
   setPrintConfig(input: Partial<PrintConfig>): PrintConfig {
     return this.jobsRepository.setPrintConfig(input);
+  }
+
+  async getPrinterDiagnostics(): Promise<PrinterDiagnostics> {
+    const config = this.jobsRepository.getPrintConfig();
+    if (process.platform !== 'linux') {
+      return {
+        platform: process.platform,
+        configuredDevicePath: config.linuxPrinterDevicePath,
+        resolvedDevicePath: null,
+        currentUser: 'n/a',
+        currentUid: null,
+        currentGid: null,
+        currentGroups: [],
+        pos58: {
+          path: '/dev/pos58',
+          exists: false,
+          writable: false,
+          owner: null,
+          group: null,
+          mode: null,
+          error: 'Linux diagnostics are only available on Linux.',
+        },
+        usbLpDevices: [],
+        notes: ['Linux diagnostics are only available on Linux.'],
+      };
+    }
+    return getLinuxPrinterDiagnostics(config.linuxPrinterDevicePath);
+  }
+
+  async printerPrintSelfTest(includeDebugFooter = false): Promise<PrintV2Response> {
+    const config = this.jobsRepository.getPrintConfig();
+    const footer = includeDebugFooter
+      ? [
+          '--------------------',
+          `ts=${new Date().toISOString()}`,
+          `app=${process.env.npm_package_version || 'dev'}`,
+          `device=${config.linuxPrinterDevicePath || '/dev/pos58'}`,
+        ]
+      : [];
+    const payload = buildEscPosTextPayload(
+      ['POS KIOSK SELF-TEST', 'PRINT V2 DIRECT USB', `fecha=${new Date().toISOString()}`].join('\n'),
+      footer,
+    );
+    return this.printV2({
+      rawBase64: payload.toString('base64'),
+      jobName: `self_test_${Date.now()}`,
+    });
+  }
+
+  async printerPrintText(text: string, options: PrinterDebugTextOptions = {}): Promise<PrintV2Response> {
+    const config = this.jobsRepository.getPrintConfig();
+    const footer = options.includeDebugFooter
+      ? [
+          '--------------------',
+          `ts=${new Date().toISOString()}`,
+          `app=${process.env.npm_package_version || 'dev'}`,
+          `device=${config.linuxPrinterDevicePath || '/dev/pos58'}`,
+        ]
+      : [];
+    const payload = buildEscPosTextPayload(text, footer);
+    return this.printV2({
+      rawBase64: payload.toString('base64'),
+      jobName: `debug_text_${Date.now()}`,
+    });
+  }
+
+  private normalizeRequest(request: PrintV2Request): PrintV2Request {
+    const rawBuffer = Buffer.from(String(request.rawBase64 || ''), 'base64');
+    if (!rawBuffer.length) {
+      throw new Error('Invalid rawBase64 payload');
+    }
+    const normalized = normalizeEscPosPayload(rawBuffer);
+    return {
+      ...request,
+      rawBase64: normalized.toString('base64'),
+    };
   }
 }

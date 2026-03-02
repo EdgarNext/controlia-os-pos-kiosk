@@ -89,6 +89,7 @@ export interface RuntimeConfig {
   tenantId: string | null;
   kioskId: string | null;
   kioskNumber: number | null;
+  kioskDisplayName: string | null;
   tenantSlug: string | null;
   deviceId: string | null;
   deviceSecret: string | null;
@@ -100,4 +101,78 @@ export interface RuntimeConfig {
   scannerHumanKeyGapMs: number | null;
   scannerAllowEnterTerminator: boolean | null;
   scannerAllowedCharsPattern: string | null;
+  touchScreenEnabled: boolean | null;
+  posSessionTimeoutMinutes: number | null;
+  posSessionUserId: string | null;
+  posSessionUserName: string | null;
+  posSessionRole: string | null;
+  posSessionStartedAt: string | null;
+  posSessionLastActivityAt: string | null;
+}
+
+export interface PosUserView {
+  id: string;
+  name: string;
+  role: string;
+}
+
+export interface PosSessionView {
+  userId: string;
+  userName: string;
+  role: string;
+  startedAt: string;
+  lastActivityAt: string;
+  timeoutMinutes: number;
+}
+
+export interface PosLoginResult {
+  ok: boolean;
+  error?: string;
+  session?: PosSessionView;
+}
+
+export interface PosLoginInput {
+  userId: string;
+  pin: string;
+}
+
+export interface SupervisorOverrideInput {
+  pin: string;
+}
+
+export interface SupervisorOverrideResult {
+  ok: boolean;
+  error?: string;
+  supervisor?: PosUserView;
+}
+
+export interface DeviceClaimActivateInput {
+  tenantSlug: string;
+  claimCode: string;
+}
+
+export interface DeviceClaimActivateResult {
+  ok: boolean;
+  error?: string;
+  tenantId?: string;
+  kioskId?: string;
+  kioskNumber?: number;
+  kioskDisplayName?: string;
+  deviceId?: string;
+}
+
+export interface DeviceActivationState {
+  state: 'unclaimed' | 'active' | 'revoked';
+  message: string;
+}
+
+export interface DeviceBindingInfo {
+  apiBaseUrl: string;
+  runtime: RuntimeConfig;
+  hasBinding: boolean;
+}
+
+export interface DeviceBindingResetResult {
+  ok: boolean;
+  error?: string;
 }

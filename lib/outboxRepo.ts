@@ -84,7 +84,7 @@ export class OutboxRepo {
     const rows = this.db.prepare(`
       SELECT *
       FROM outbox_mutations
-      WHERE status IN ('PENDING', 'FAILED', 'CONFLICT')
+      WHERE status IN ('PENDING', 'FAILED')
       ORDER BY created_at ASC
       LIMIT ?
     `).all(safeLimit) as Array<Record<string, unknown>>;

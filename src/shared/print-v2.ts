@@ -29,6 +29,33 @@ export interface PrintV2Response {
 }
 
 export interface PrintConfig {
-  linuxPrinterName: string;
+  linuxPrinterDevicePath: string;
   windowsPrinterShare: string;
+}
+
+export interface PrinterDeviceStat {
+  path: string;
+  exists: boolean;
+  writable: boolean;
+  owner: string | null;
+  group: string | null;
+  mode: string | null;
+  error: string | null;
+}
+
+export interface PrinterDiagnostics {
+  platform: NodeJS.Platform;
+  configuredDevicePath: string;
+  resolvedDevicePath: string | null;
+  currentUser: string;
+  currentUid: number | null;
+  currentGid: number | null;
+  currentGroups: string[];
+  pos58: PrinterDeviceStat;
+  usbLpDevices: PrinterDeviceStat[];
+  notes: string[];
+}
+
+export interface PrinterDebugTextOptions {
+  includeDebugFooter?: boolean;
 }
