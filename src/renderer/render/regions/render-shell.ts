@@ -1,15 +1,19 @@
 export const SHELL_LAYOUT_HTML = `
   <main class="kiosk-shell brand-accent-shell" id="region-shell">
     <header class="topbar control-strip header">
-      <div class="topbar-left brand-block header-left">
-        <h1>Kiosk POS</h1>
-        <p id="topbar-subtitle">Offline-first</p>
-      </div>
-      <div class="topbar-center header-center">
-        <div id="topbar-context" class="topbar-context">Usuario · Rol · Kiosko</div>
-      </div>
-      <div class="topbar-right header-right">
-        <div class="topbar-actions" data-region="header-actions"></div>
+      <div class="header-row header-row-primary">
+        <div class="topbar-left brand-block header-left">
+          <div class="topbar-brand-identity">
+            <img id="topbar-logo" class="topbar-logo" alt="Controlia" />
+            <div class="topbar-brand-copy">
+              <h1 id="topbar-title">Kiosk POS</h1>
+              <p id="topbar-subtitle">Offline-first</p>
+            </div>
+          </div>
+        </div>
+        <div class="topbar-right header-right">
+          <div class="topbar-actions" data-region="header-actions"></div>
+        </div>
       </div>
     </header>
 

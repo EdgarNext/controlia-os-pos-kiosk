@@ -76,7 +76,7 @@ export class SalesService {
         printStatus: 'FAILED',
         printJobId: null,
         printError: 'Print queued',
-        printAttempted: false,
+        printAttempted: true,
       });
     } catch (error) {
       return {
@@ -92,6 +92,7 @@ export class SalesService {
       pagoRecibidoCents,
       cambioCents,
       input.metodoPago || 'efectivo',
+      runtime.splitFoodAndDrinksOnTicket === true,
       created.folioText,
     );
     try {
@@ -156,6 +157,7 @@ export class SalesService {
       order.pagoRecibidoCents,
       order.cambioCents,
       order.metodoPago,
+      this.ordersRepository.getRuntimeConfig().splitFoodAndDrinksOnTicket === true,
       order.folioText,
       order.createdAt,
       true,
@@ -211,11 +213,12 @@ export class SalesService {
   }
 
   private buildTicketRawBase64(
-    lines: Array<{ name: string; qty: number; unitPriceCents: number }>,
+    lines: Array<{ name: string; qty: number; unitPriceCents: number; itemType?: string | null }>,
     totalCents: number,
     pagoRecibidoCents: number,
     cambioCents: number,
     metodoPago: string,
+    splitFoodAndDrinksOnTicket: boolean,
     folioText?: string,
     createdAtIso?: string,
     isReprint = false,
@@ -229,15 +232,7 @@ export class SalesService {
     }
     headerLines.push('------------------------------');
 
-    const itemLines: string[] = [];
-    lines.forEach((line) => {
-      const lineTotal = new Intl.NumberFormat('es-MX', {
-        style: 'currency',
-        currency: 'MXN',
-        minimumFractionDigits: 0,
-      }).format((line.unitPriceCents * line.qty) / 100);
-      itemLines.push(`${line.qty}x ${line.name} ${lineTotal}`);
-    });
+    const itemLines = buildTicketItemLines(lines, splitFoodAndDrinksOnTicket);
 
     const money = (cents: number) =>
       new Intl.NumberFormat('es-MX', {
@@ -260,9 +255,54 @@ export class SalesService {
 
 function formatPaymentMethod(value: string): string {
   const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'tarjeta') return 'Tarjeta de credito';
-  if (normalized === 'efectivo') return 'Efectivo';
+  if (normalized === 'tarjeta' || normalized === 'card') return 'Tarjeta de credito';
+  if (normalized === 'efectivo' || normalized === 'cash') return 'Efectivo';
+  if (normalized === 'employee') return 'Pago Empleado';
   return normalized ? normalized : 'Efectivo';
+}
+
+function buildTicketItemLines(
+  lines: Array<{ name: string; qty: number; unitPriceCents: number; itemType?: string | null }>,
+  splitFoodAndDrinksOnTicket: boolean,
+): string[] {
+  const formatted = lines.map((line) => {
+    const lineTotal = new Intl.NumberFormat('es-MX', {
+      style: 'currency',
+      currency: 'MXN',
+      minimumFractionDigits: 0,
+    }).format((line.unitPriceCents * line.qty) / 100);
+    return {
+      text: `${line.qty}x ${line.name} ${lineTotal}`,
+      isDrink: isDrinkLine(line.itemType, line.name),
+    };
+  });
+
+  if (!splitFoodAndDrinksOnTicket) {
+    return formatted.map((line) => line.text);
+  }
+
+  const foods = formatted.filter((line) => !line.isDrink).map((line) => line.text);
+  const drinks = formatted.filter((line) => line.isDrink).map((line) => line.text);
+  if (!foods.length || !drinks.length) {
+    return formatted.map((line) => line.text);
+  }
+  return [...foods, '', '', '', '', '------------------------------', '', '', '', '', ...drinks];
+}
+
+function isDrinkLine(itemType: string | null | undefined, name: string): boolean {
+  const type = String(itemType || '').trim().toLowerCase();
+  if (type) {
+    if (/(bebida|drink|beverage|juice|soda|coffee|tea|agua|cerveza|beer|cocktail|refresco)/.test(type)) {
+      return true;
+    }
+    if (/(food|meal|alimento|comida|snack|postre|dessert)/.test(type)) {
+      return false;
+    }
+  }
+  const normalizedName = String(name || '').trim().toLowerCase();
+  return /(agua|cafe|café|te|té|jugo|juice|refresco|soda|cola|cerveza|beer|vino|wine|coctel|cocktail)/.test(
+    normalizedName,
+  );
 }
 
 function formatDateTimeMx(value: string): string {

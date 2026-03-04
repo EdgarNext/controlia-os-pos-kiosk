@@ -159,7 +159,7 @@ export interface TabKitchenRoundActionResult {
 
 export interface CloseTabPaidInput {
   tabId: string;
-  metodoPago: 'efectivo' | 'tarjeta';
+  metodoPago: 'efectivo' | 'tarjeta' | 'employee';
   pagoRecibidoCents?: number;
 }
 

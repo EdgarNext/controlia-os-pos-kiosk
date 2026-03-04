@@ -1,4 +1,5 @@
 import './index.css';
+import controliaMarkUrl from './assets/controlia-mark.svg';
 import { disposeAll, registerCleanup } from './renderer/lifecycle/lifecycle';
 import { clearTrackedInterval, clearTrackedTimeout, setIntervalTracked, setTimeoutTracked } from './renderer/lifecycle/timers';
 import { mark, measure, reportEvery, trackDuration } from './renderer/perf/marks';
@@ -8,13 +9,18 @@ import { getTheme, initTheme, toggleTheme } from './renderer/theme';
 import {
   iconBackspace,
   iconBanknote,
+  iconBurger,
+  iconCategory,
   iconClear,
+  iconCoffeeCup,
   iconCreditCard,
   iconGear,
   iconHistory,
+  iconIceCream,
   iconInspect,
   iconKitchen,
   iconMoon,
+  iconPizza,
   iconPrinter,
   iconReceipt,
   iconScan,
@@ -22,6 +28,7 @@ import {
   iconSync,
   iconTable,
   iconTag,
+  iconDrink,
   iconUser,
 } from './renderer/ui/icons';
 import { renderCartRegion } from './renderer/render/regions/render-cart';
@@ -64,8 +71,10 @@ interface CartLine extends CartLineView {
 
 interface UiRefs {
   initialized: boolean;
+  topbarTitle: HTMLElement | null;
   topbarSubtitle: HTMLElement | null;
   topbarContext: HTMLElement | null;
+  topbarLogo: HTMLImageElement | null;
   headerActions: HTMLElement | null;
   categoriesRegion: HTMLElement | null;
   productsRegion: HTMLElement | null;
@@ -92,12 +101,18 @@ if (!app) throw new Error('Renderer root #app not found');
 initTheme();
 
 const ENTER_CONFIRM_WINDOW_MS = 1500;
+const PIN_MAX_DIGITS = 12;
 const SHOW_OPEN_TABS_DEBUG = false;
+
+type SupervisorOverrideOutcome = { ok: boolean; pin?: string };
+let resolveSupervisorOverridePrompt: ((result: SupervisorOverrideOutcome) => void) | null = null;
 
 const ui: UiRefs = {
   initialized: false,
+  topbarTitle: null,
   topbarSubtitle: null,
   topbarContext: null,
+  topbarLogo: null,
   headerActions: null,
   categoriesRegion: null,
   productsRegion: null,
@@ -196,6 +211,56 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#039;');
 }
 
+function normalizePinInput(value: string): string {
+  return String(value || '').replace(/\D/g, '').slice(0, PIN_MAX_DIGITS);
+}
+
+function renderPinNumpad(actionPrefix: 'pos-login-pin' | 'supervisor-pin', disabled = false): string {
+  return `
+    <div class="checkout-numpad" data-scan-capture="off">
+      <button class="button secondary checkout-numpad-key" data-action="${actionPrefix}-numpad-input" data-value="1" ${
+        disabled ? 'disabled' : ''
+      }>1</button>
+      <button class="button secondary checkout-numpad-key" data-action="${actionPrefix}-numpad-input" data-value="2" ${
+        disabled ? 'disabled' : ''
+      }>2</button>
+      <button class="button secondary checkout-numpad-key" data-action="${actionPrefix}-numpad-input" data-value="3" ${
+        disabled ? 'disabled' : ''
+      }>3</button>
+
+      <button class="button secondary checkout-numpad-key" data-action="${actionPrefix}-numpad-input" data-value="4" ${
+        disabled ? 'disabled' : ''
+      }>4</button>
+      <button class="button secondary checkout-numpad-key" data-action="${actionPrefix}-numpad-input" data-value="5" ${
+        disabled ? 'disabled' : ''
+      }>5</button>
+      <button class="button secondary checkout-numpad-key" data-action="${actionPrefix}-numpad-input" data-value="6" ${
+        disabled ? 'disabled' : ''
+      }>6</button>
+
+      <button class="button secondary checkout-numpad-key" data-action="${actionPrefix}-numpad-input" data-value="7" ${
+        disabled ? 'disabled' : ''
+      }>7</button>
+      <button class="button secondary checkout-numpad-key" data-action="${actionPrefix}-numpad-input" data-value="8" ${
+        disabled ? 'disabled' : ''
+      }>8</button>
+      <button class="button secondary checkout-numpad-key" data-action="${actionPrefix}-numpad-input" data-value="9" ${
+        disabled ? 'disabled' : ''
+      }>9</button>
+
+      <button class="button secondary checkout-numpad-key checkout-numpad-fn checkout-numpad-icon" data-action="${
+        actionPrefix
+      }-numpad-clear" aria-label="Limpiar PIN" ${disabled ? 'disabled' : ''}>${iconClear()}</button>
+      <button class="button secondary checkout-numpad-key" data-action="${actionPrefix}-numpad-input" data-value="0" ${
+        disabled ? 'disabled' : ''
+      }>0</button>
+      <button class="button secondary checkout-numpad-key checkout-numpad-fn checkout-numpad-icon" data-action="${
+        actionPrefix
+      }-numpad-backspace" aria-label="Borrar ultimo digito" ${disabled ? 'disabled' : ''}>${iconBackspace()}</button>
+    </div>
+  `;
+}
+
 function focusCheckoutReceivedInput(): void {
   requestAnimationFrame(() => {
     const input = document.getElementById('input-received') as HTMLInputElement | null;
@@ -206,16 +271,33 @@ function focusCheckoutReceivedInput(): void {
   });
 }
 
-function getCategoryImageUrl(category: CatalogCategory): string | null {
-  const candidate = category as CatalogCategory & {
-    imagePath?: string | null;
-    imageUrl?: string | null;
-    image_url?: string | null;
-  };
-  const raw = candidate.imagePath ?? candidate.imageUrl ?? candidate.image_url ?? null;
-  if (typeof raw !== 'string') return null;
-  const normalized = raw.trim();
-  return normalized.length ? normalized : null;
+function normalizeCategoryKey(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function getCategoryIconByName(categoryName: string): string {
+  const key = normalizeCategoryKey(categoryName);
+  if (/(cafe|coffee|bebida caliente|te|té)/.test(key)) return iconCoffeeCup();
+  if (/(hamburguesa|burger|sandwich|torta|hot dog|perro)/.test(key)) return iconBurger();
+  if (/(pizza|italiana)/.test(key)) return iconPizza();
+  if (/(helado|postre|dessert|dulce|pastel|cake)/.test(key)) return iconIceCream();
+  if (/(bebida|refresco|soda|jugo|agua|cerveza|coctel|cocktail)/.test(key)) return iconDrink();
+  if (/(comida|platillo|alimento|menu|menú|especialidades|antojitos|snack)/.test(key)) return iconReceipt();
+  return iconCategory();
+}
+
+function formatTenantLabel(value: string | null | undefined): string {
+  const raw = String(value || '').trim();
+  if (!raw) return 'Controlia';
+  return raw
+    .split(/[-_\s]+/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 function hasBlockingGate(): boolean {
@@ -338,6 +420,24 @@ function isTouchScreenEnabled(runtime: RuntimeConfig | null): boolean {
   return runtime?.touchScreenEnabled !== false;
 }
 
+function isEmployeePaymentsEnabled(runtime: RuntimeConfig | null): boolean {
+  return runtime?.employeePaymentsEnabled === true;
+}
+
+function isSplitFoodAndDrinksOnTicketEnabled(runtime: RuntimeConfig | null): boolean {
+  return runtime?.splitFoodAndDrinksOnTicket === true;
+}
+
+function getAvailablePaymentMethods(): Array<'efectivo' | 'tarjeta' | 'employee'> {
+  const methods: Array<'efectivo' | 'tarjeta' | 'employee'> = ['efectivo', 'tarjeta'];
+  if (isEmployeePaymentsEnabled(state.runtimeConfig)) methods.push('employee');
+  return methods;
+}
+
+function isNonCashPaymentMethod(method: string): boolean {
+  return method === 'tarjeta' || method === 'employee';
+}
+
 function isSupervisorRole(role: string | null | undefined): boolean {
   const normalized = String(role || '').toLowerCase();
   return normalized === 'supervisor' || normalized === 'admin';
@@ -414,6 +514,8 @@ function resolveRuntimeConfigDefaults(): RuntimeConfig {
     scannerAllowEnterTerminator: true,
     scannerAllowedCharsPattern: '[0-9A-Za-z\\-_.]',
     touchScreenEnabled: true,
+    employeePaymentsEnabled: false,
+    splitFoodAndDrinksOnTicket: false,
     posSessionTimeoutMinutes: 30,
     posSessionUserId: null,
     posSessionUserName: null,
@@ -522,18 +624,11 @@ function parseReceivedCents(): number {
 
 function canConfirmPayment(): boolean {
   const total = getCurrentSaleTotalCents();
-  if (state.checkoutPaymentMethod === 'tarjeta') {
+  if (isNonCashPaymentMethod(state.checkoutPaymentMethod)) {
     return total > 0 && !state.busy;
   }
   const received = parseReceivedCents();
   return total > 0 && received >= total && !state.busy;
-}
-
-function hasSaleInProgress(): boolean {
-  if (state.tableModeEnabled) {
-    return Boolean(state.openTabsSelectedTabId) || state.checkoutOpen;
-  }
-  return getCartLines().length > 0 || state.checkoutOpen;
 }
 
 function adjustQty(itemId: string, delta: number): void {
@@ -555,8 +650,15 @@ function clearCart(): void {
 }
 
 function setCheckoutPaymentMethod(methodRaw: string): void {
-  state.checkoutPaymentMethod = methodRaw === 'tarjeta' ? 'tarjeta' : 'efectivo';
-  if (state.checkoutPaymentMethod === 'tarjeta') {
+  const available = getAvailablePaymentMethods();
+  if (methodRaw === 'employee' && available.includes('employee')) {
+    state.checkoutPaymentMethod = 'employee';
+  } else if (methodRaw === 'tarjeta') {
+    state.checkoutPaymentMethod = 'tarjeta';
+  } else {
+    state.checkoutPaymentMethod = 'efectivo';
+  }
+  if (isNonCashPaymentMethod(state.checkoutPaymentMethod)) {
     state.receivedInput = '';
     state.checkoutNumpadOpen = false;
   } else {
@@ -565,7 +667,7 @@ function setCheckoutPaymentMethod(methodRaw: string): void {
   state.enterConfirmArmedAt = null;
   bumpCartVersion();
   queueRender('checkout-payment-method');
-  if (state.checkoutPaymentMethod !== 'tarjeta') {
+  if (!isNonCashPaymentMethod(state.checkoutPaymentMethod)) {
     focusCheckoutReceivedInput();
   }
 }
@@ -585,11 +687,14 @@ function openCheckout(): void {
   state.checkoutOpen = true;
   state.receivedInput = '';
   state.checkoutPaymentMethod = state.tableModeEnabled ? state.openTabsPaymentMethod : 'efectivo';
-  state.checkoutNumpadOpen = state.checkoutPaymentMethod !== 'tarjeta' && isTouchScreenEnabled(state.runtimeConfig);
+  if (state.checkoutPaymentMethod === 'employee' && !isEmployeePaymentsEnabled(state.runtimeConfig)) {
+    state.checkoutPaymentMethod = 'efectivo';
+  }
+  state.checkoutNumpadOpen = !isNonCashPaymentMethod(state.checkoutPaymentMethod) && isTouchScreenEnabled(state.runtimeConfig);
   state.enterConfirmArmedAt = null;
   void applyScanContext();
   render();
-  if (state.checkoutPaymentMethod !== 'tarjeta') {
+  if (!isNonCashPaymentMethod(state.checkoutPaymentMethod)) {
     focusCheckoutReceivedInput();
   }
 }
@@ -655,18 +760,6 @@ function formatDate(value: string | null | undefined): string {
     timeStyle: 'short',
     hour12: false,
   }).format(date);
-}
-
-function getKitchenPrintLabel(ok: boolean): string {
-  return ok ? 'Impresa' : 'Error impresion';
-}
-
-function getKitchenSyncLabel(status: 'PENDING' | 'SENT' | 'ACKED' | 'FAILED' | 'CONFLICT'): string {
-  if (status === 'ACKED') return 'Sync OK';
-  if (status === 'CONFLICT') return 'Sync conflicto';
-  if (status === 'FAILED') return 'Sync error';
-  if (status === 'SENT') return 'Sync enviado';
-  return 'Sync pendiente';
 }
 
 function openTabsStatusClass(): string {
@@ -853,6 +946,7 @@ function renderPosAuthGate(): string {
     : '<option value="">Sin usuarios sincronizados</option>';
 
   const statusClass = state.auth.kind === 'error' ? 'error' : state.auth.kind === 'success' ? 'success' : '';
+  const showTouchNumpad = isTouchScreenEnabled(state.runtimeConfig);
 
   return `
     <div class="modal-overlay activation-overlay">
@@ -869,8 +963,9 @@ function renderPosAuthGate(): string {
           <span>PIN</span>
           <input id="pos-login-pin" data-scan-capture="off" class="input" type="password" value="${escapeHtml(
             state.auth.pinInput,
-          )}" ${state.auth.inFlight ? 'disabled' : ''} />
+          )}" inputmode="numeric" ${state.auth.inFlight ? 'disabled' : ''} />
         </label>
+        ${showTouchNumpad ? renderPinNumpad('pos-login-pin', state.auth.inFlight) : ''}
         <div class="modal-actions">
           <button class="button secondary" data-action="sync-catalog" ${state.auth.inFlight ? 'disabled' : ''}>
             Sincronizar catalogo
@@ -878,6 +973,41 @@ function renderPosAuthGate(): string {
           <button class="button" data-action="pos-login-submit" ${state.auth.inFlight ? 'disabled' : ''}>
             ${state.auth.inFlight ? 'Validando...' : 'Entrar'}
           </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSupervisorOverrideModal(): string {
+  if (!state.auth.supervisorOverrideOpen) return '';
+  const statusClass =
+    state.auth.supervisorOverrideKind === 'error'
+      ? 'error'
+      : state.auth.supervisorOverrideKind === 'success'
+        ? 'success'
+        : '';
+
+  return `
+    <div class="modal-overlay activation-overlay">
+      <div class="modal activation-modal">
+        <h2>Override supervisor</h2>
+        <div class="status ${statusClass}">${escapeHtml(state.auth.supervisorOverrideMessage || 'Ingresa PIN supervisor.')}</div>
+        <div class="cart-sub">Motivo: ${escapeHtml(state.auth.supervisorOverrideReason || 'Operacion restringida')}</div>
+        <label class="field">
+          <span>PIN supervisor</span>
+          <input id="supervisor-override-pin" data-scan-capture="off" class="input" type="password" inputmode="numeric" value="${escapeHtml(
+            state.auth.supervisorPinInput,
+          )}" ${state.auth.supervisorOverrideInFlight ? 'disabled' : ''} />
+        </label>
+        ${renderPinNumpad('supervisor-pin', state.auth.supervisorOverrideInFlight)}
+        <div class="modal-actions">
+          <button class="button secondary" data-action="supervisor-override-cancel" ${
+            state.auth.supervisorOverrideInFlight ? 'disabled' : ''
+          }>Cancelar</button>
+          <button class="button" data-action="supervisor-override-submit" ${
+            state.auth.supervisorOverrideInFlight ? 'disabled' : ''
+          }>${state.auth.supervisorOverrideInFlight ? 'Validando...' : 'Confirmar override'}</button>
         </div>
       </div>
     </div>
@@ -923,7 +1053,7 @@ async function loginPosUser(): Promise<void> {
     render();
     return;
   }
-  const pin = state.auth.pinInput.trim();
+  const pin = normalizePinInput(state.auth.pinInput);
   if (!pin) {
     state.auth.kind = 'error';
     state.auth.message = 'PIN requerido.';
@@ -964,10 +1094,40 @@ async function loginPosUser(): Promise<void> {
   }
 }
 
+function loginPinNumpadInput(value: string): void {
+  if (state.auth.inFlight || !/^\d$/.test(value)) return;
+  state.auth.pinInput = normalizePinInput(`${state.auth.pinInput}${value}`);
+  bumpAuthVersion();
+  render();
+}
+
+function loginPinNumpadBackspace(): void {
+  if (state.auth.inFlight) return;
+  state.auth.pinInput = state.auth.pinInput.slice(0, -1);
+  bumpAuthVersion();
+  render();
+}
+
+function loginPinNumpadClear(): void {
+  if (state.auth.inFlight) return;
+  state.auth.pinInput = '';
+  bumpAuthVersion();
+  render();
+}
+
 async function logoutPosUser(): Promise<void> {
   await window.posKiosk.logoutPosUser();
+  const resolve = resolveSupervisorOverridePrompt;
+  resolveSupervisorOverridePrompt = null;
+  if (resolve) resolve({ ok: false });
   state.auth.session = null;
   state.auth.pinInput = '';
+  state.auth.supervisorOverrideOpen = false;
+  state.auth.supervisorOverrideReason = '';
+  state.auth.supervisorPinInput = '';
+  state.auth.supervisorOverrideInFlight = false;
+  state.auth.supervisorOverrideMessage = '';
+  state.auth.supervisorOverrideKind = 'info';
   state.auth.kind = 'info';
   state.auth.message = 'Sesion cerrada.';
   bumpAuthVersion();
@@ -976,18 +1136,118 @@ async function logoutPosUser(): Promise<void> {
   render();
 }
 
+function closeSupervisorOverride(): void {
+  if (!state.auth.supervisorOverrideOpen || state.auth.supervisorOverrideInFlight) return;
+  state.auth.supervisorOverrideOpen = false;
+  state.auth.supervisorOverrideReason = '';
+  state.auth.supervisorPinInput = '';
+  state.auth.supervisorOverrideInFlight = false;
+  state.auth.supervisorOverrideMessage = '';
+  state.auth.supervisorOverrideKind = 'info';
+  bumpAuthVersion();
+  const resolve = resolveSupervisorOverridePrompt;
+  resolveSupervisorOverridePrompt = null;
+  if (resolve) resolve({ ok: false });
+  render();
+}
+
+function supervisorPinNumpadInput(value: string): void {
+  if (!state.auth.supervisorOverrideOpen || state.auth.supervisorOverrideInFlight || !/^\d$/.test(value)) return;
+  state.auth.supervisorPinInput = normalizePinInput(`${state.auth.supervisorPinInput}${value}`);
+  state.auth.supervisorOverrideKind = 'info';
+  state.auth.supervisorOverrideMessage = '';
+  bumpAuthVersion();
+  render();
+}
+
+function supervisorPinNumpadBackspace(): void {
+  if (!state.auth.supervisorOverrideOpen || state.auth.supervisorOverrideInFlight) return;
+  state.auth.supervisorPinInput = state.auth.supervisorPinInput.slice(0, -1);
+  state.auth.supervisorOverrideKind = 'info';
+  state.auth.supervisorOverrideMessage = '';
+  bumpAuthVersion();
+  render();
+}
+
+function supervisorPinNumpadClear(): void {
+  if (!state.auth.supervisorOverrideOpen || state.auth.supervisorOverrideInFlight) return;
+  state.auth.supervisorPinInput = '';
+  state.auth.supervisorOverrideKind = 'info';
+  state.auth.supervisorOverrideMessage = '';
+  bumpAuthVersion();
+  render();
+}
+
+async function submitSupervisorOverride(): Promise<void> {
+  if (!state.auth.supervisorOverrideOpen || state.auth.supervisorOverrideInFlight) return;
+  const pin = normalizePinInput(state.auth.supervisorPinInput);
+  if (!pin) {
+    state.auth.supervisorOverrideKind = 'error';
+    state.auth.supervisorOverrideMessage = 'PIN supervisor requerido.';
+    bumpAuthVersion();
+    render();
+    return;
+  }
+  state.auth.supervisorOverrideInFlight = true;
+  state.auth.supervisorOverrideKind = 'info';
+  state.auth.supervisorOverrideMessage = 'Validando PIN supervisor...';
+  bumpAuthVersion();
+  render();
+  try {
+    const result = await window.posKiosk.supervisorOverride({ pin });
+    if (!result.ok) {
+      state.auth.supervisorOverrideKind = 'error';
+      state.auth.supervisorOverrideMessage = result.error || 'Override supervisor denegado.';
+      return;
+    }
+    state.auth.supervisorOverrideOpen = false;
+    state.auth.supervisorOverrideReason = '';
+    state.auth.supervisorPinInput = '';
+    state.auth.supervisorOverrideInFlight = false;
+    state.auth.supervisorOverrideKind = 'success';
+    state.auth.supervisorOverrideMessage = '';
+    const resolve = resolveSupervisorOverridePrompt;
+    resolveSupervisorOverridePrompt = null;
+    if (resolve) resolve({ ok: true, pin });
+    setStatus(`Override autorizado por ${result.supervisor?.name || 'supervisor'}.`, 'success');
+  } catch (error) {
+    state.auth.supervisorOverrideKind = 'error';
+    state.auth.supervisorOverrideMessage =
+      error instanceof Error ? error.message : 'Error validando PIN supervisor.';
+  } finally {
+    state.auth.supervisorOverrideInFlight = false;
+    bumpAuthVersion();
+    render();
+  }
+}
+
+function promptSupervisorOverride(reason: string): Promise<SupervisorOverrideOutcome> {
+  if (resolveSupervisorOverridePrompt) {
+    resolveSupervisorOverridePrompt({ ok: false });
+    resolveSupervisorOverridePrompt = null;
+  }
+  state.auth.supervisorOverrideOpen = true;
+  state.auth.supervisorOverrideReason = reason;
+  state.auth.supervisorPinInput = '';
+  state.auth.supervisorOverrideInFlight = false;
+  state.auth.supervisorOverrideKind = 'info';
+  state.auth.supervisorOverrideMessage = 'Ingresa PIN supervisor para continuar.';
+  bumpAuthVersion();
+  render();
+  return new Promise((resolve) => {
+    resolveSupervisorOverridePrompt = resolve;
+  });
+}
+
 async function ensureSupervisorOverrideIfNeeded(reason: string): Promise<boolean> {
   const role = state.auth.session?.role || null;
   if (isSupervisorRole(role)) return true;
 
-  const pin = window.prompt(`Override supervisor requerido (${reason}). Ingresa PIN supervisor:`) || '';
-  if (!pin.trim()) return false;
-  const result = await window.posKiosk.supervisorOverride({ pin });
-  if (!result.ok) {
-    setStatus(result.error || 'Override supervisor denegado.', 'error');
+  const override = await promptSupervisorOverride(reason);
+  if (!override.ok) {
+    setStatus('Override supervisor cancelado.', 'info');
     return false;
   }
-  setStatus(`Override autorizado por ${result.supervisor?.name || 'supervisor'}.`, 'success');
   return true;
 }
 
@@ -1177,8 +1437,10 @@ function initUI(): void {
   if (ui.initialized) return;
   app.innerHTML = SHELL_LAYOUT_HTML;
 
+  ui.topbarTitle = app.querySelector('#topbar-title');
   ui.topbarSubtitle = app.querySelector('#topbar-subtitle');
   ui.topbarContext = app.querySelector('#topbar-context');
+  ui.topbarLogo = app.querySelector('#topbar-logo');
   ui.headerActions = app.querySelector('[data-region="header-actions"]');
   ui.categoriesRegion = app.querySelector('[data-region="categories"]');
   ui.productsRegion = app.querySelector('[data-region="products"]');
@@ -1197,46 +1459,54 @@ function renderBottomStatusRegion(): void {
   const sync = state.statusBar.sync;
   const scanner = state.statusBar.scanner;
   const print = state.statusBar.print;
-  const runtime = state.statusBar.runtime;
+  const sessionUser = state.auth.session?.userName || 'Sin sesion';
+  const sessionRole = state.auth.session?.role || 'Invitado';
   const syncStatusView = getSyncStatusView(state);
 
-  const syncValue = syncStatusView.syncValue;
+  const syncValue = sync.pendingTotal > 0 ? String(sync.pendingTotal) : '';
   const scannerValue =
     scanner.phase === 'warn'
-      ? 'No encontrado'
+      ? 'No'
       : scanner.lastCode
-        ? `Ultimo: ${scanner.lastCode}`
-        : 'Scanner listo';
+        ? 'Leido'
+        : 'OK';
   const printValue =
     print.phase === 'working'
-      ? 'Imprimiendo...'
+      ? 'Proc'
       : print.phase === 'error'
-        ? 'Fallo impresion'
-        : 'Impresion lista';
-  const runtimeValue = runtime.modeMesa
-    ? `Modo mesa: ON ${runtime.folioHint ? `· ${runtime.folioHint}` : ''}`
-    : `Modo mesa: OFF ${runtime.kioskLabel ? `· ${runtime.kioskLabel}` : ''}`;
+        ? 'Error'
+        : 'OK';
+  const syncToneClass = sync.phase === 'warn' ? 'warn' : sync.phase === 'working' ? 'working' : 'ok';
+  const scannerToneClass = scanner.phase === 'warn' ? 'warn' : 'ok';
+  const printToneClass = print.phase === 'error' ? 'warn' : print.phase === 'working' ? 'working' : 'ok';
+  const syncConnectionLabel = sync.phase === 'warn' ? 'Offline' : 'Online';
 
   const html = `
-    <div class="status-segment" title="${escapeHtml(sync.lastOkAt ? `Ultimo OK: ${formatDate(sync.lastOkAt)}` : 'Sin sync previa')}">
-      <span class="status-label">Sync</span>
-      <span class="status-value">${escapeHtml(syncValue)}</span>
+    <div class="bottom-status-left">
+      <span class="status-chip sync-chip ${syncToneClass}" title="${escapeHtml(
+        syncStatusView.syncValue + (sync.lastOkAt ? ` · Ultimo OK: ${formatDate(sync.lastOkAt)}` : ''),
+      )}">
+        <span class="status-chip-icon ${syncToneClass === 'working' ? 'spinning' : ''}">${iconSync()}</span>
+        <span class="status-chip-label">Sync ${syncConnectionLabel}</span>
+        ${syncValue ? `<span class="status-chip-badge">${escapeHtml(syncValue)}</span>` : ''}
+      </span>
+      <span class="status-chip ${scannerToneClass}" title="${escapeHtml(
+        scanner.lastAt ? `Ultima lectura: ${formatDate(scanner.lastAt)}` : 'Scanner listo',
+      )}">
+        <span class="status-chip-icon">${iconScan()}</span>
+        <span class="status-chip-label">${escapeHtml(scannerValue)}</span>
+      </span>
+      <span class="status-chip ${printToneClass}" title="${escapeHtml(
+        print.lastErrorShort || (print.phase === 'working' ? 'Imprimiendo' : 'Cola de impresion disponible'),
+      )}">
+        <span class="status-chip-icon">${iconPrinter()}</span>
+        <span class="status-chip-label">${escapeHtml(printValue)}</span>
+      </span>
     </div>
-    <div class="status-separator"></div>
-    <div class="status-segment" title="${escapeHtml(scanner.lastAt ? `Ultima lectura: ${formatDate(scanner.lastAt)}` : 'Scanner listo')}">
-      <span class="status-label">Scanner</span>
-      <span class="status-value">${escapeHtml(scannerValue)}</span>
+    <div class="bottom-status-right" title="${escapeHtml(`${sessionRole} · ${sessionUser}`)}">
+      <span class="operator-chip-icon">${iconUser()}</span>
+      <span class="operator-chip-text">${escapeHtml(sessionRole)} · ${escapeHtml(sessionUser)}</span>
     </div>
-    <div class="status-separator"></div>
-    <div class="status-segment" title="${escapeHtml(print.lastErrorShort || 'Cola de impresion disponible')}">
-      <span class="status-label">Print</span>
-      <span class="status-value">${escapeHtml(printValue)}</span>
-    </div>
-    <div class="status-separator"></div>
-    <button class="status-segment runtime-segment" data-action="toggle-render-metrics" title="Click para togglear metricas de render">
-      <span class="status-label">Runtime</span>
-      <span class="status-value">${escapeHtml(runtimeValue)}</span>
-    </button>
   `;
   if (renderRuntime.regionSignature.statusbar === html) return;
   renderRuntime.regionSignature.statusbar = html;
@@ -1307,15 +1577,10 @@ function flushRender(): void {
     ? categories
         .map(
           (category) => {
-            const imageUrl = getCategoryImageUrl(category);
             return `
-      <button class="category-btn ${category.id === state.activeCategoryId ? 'active' : ''}" data-action="select-category" data-id="${category.id}">
+      <button class="category-btn category-nav-btn ${category.id === state.activeCategoryId ? 'active' : ''}" data-action="select-category" data-id="${category.id}">
         <span class="category-btn-content">
-          ${
-            imageUrl
-              ? `<span class="category-thumb"><img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(category.name)}" loading="lazy" /></span>`
-              : ''
-          }
+          <span class="category-icon" aria-hidden="true">${getCategoryIconByName(category.name)}</span>
           <span class="category-label">${escapeHtml(category.name)}</span>
         </span>
       </button>
@@ -1337,6 +1602,7 @@ function flushRender(): void {
               : '<div class="product-image-placeholder">Sin imagen</div>'
           }
           <div class="product-image-overlay"></div>
+          <span class="product-add-ghost" aria-hidden="true">+</span>
           <div class="product-price-badge">${formatMoney(item.priceCents)}</div>
         </div>
         <div class="product-body">
@@ -1350,11 +1616,22 @@ function flushRender(): void {
 
   const openTabsView = getOpenTabsView(state);
   const { itemNameById } = openTabsView;
+  const tableOpenTabCtaHtml = `
+    <div class="empty table-empty-cta">
+      <div class="table-empty-cta-title">Esta mesa no tiene cuenta activa.</div>
+      <div class="table-empty-cta-sub">Abre una cuenta para empezar a agregar productos.</div>
+      <button class="button primary table-empty-cta-btn" data-action="open-tabs-open-tab" ${
+        state.busy || state.openTabsBusy || !state.openTabsSelectedTableId ? 'disabled' : ''
+      }>Abrir cuenta en esta mesa</button>
+    </div>
+  `;
   const cartHtml = state.tableModeEnabled
-    ? tableVisibleLines.length
-      ? tableVisibleLines
-          .map(
-            (line) => `
+    ? !state.openTabsSelectedTabId
+      ? tableOpenTabCtaHtml
+      : tableVisibleLines.length
+        ? tableVisibleLines
+            .map(
+              (line) => `
         <div class="cart-line">
           <div>
             <div class="cart-name">${escapeHtml(itemNameById.get(line.productId) || line.productId)}</div>
@@ -1367,12 +1644,12 @@ function flushRender(): void {
             <button class="remove-btn" data-action="open-tabs-line-remove" data-id="${line.id}">Quitar</button>
           </div>
         </div>
-      `,
-          )
-          .join('')
-      : state.openTabsShowSentLines
-        ? '<div class="empty">No hay productos en esta mesa.</div>'
-        : '<div class="empty">Sin productos por enviar a cocina.</div>'
+        `,
+            )
+            .join('')
+        : state.openTabsShowSentLines
+          ? '<div class="empty">No hay productos en esta mesa.</div>'
+          : '<div class="empty">Selecciona productos para agregarlos a esta mesa.</div>'
     : cartLines.length
       ? cartLines
           .map(
@@ -1394,17 +1671,6 @@ function flushRender(): void {
           .join('')
       : '<div class="empty">Agrega productos para iniciar una orden.</div>';
 
-  const kitchenRoundsHtml =
-    state.openTabsDetail?.kitchenRounds?.length
-      ? state.openTabsDetail.kitchenRounds
-          .slice(0, 5)
-          .map(
-            (round, idx) => `
-      <div class="cart-sub">Comanda ${idx + 1} · ${round.linesCount} productos · ${getKitchenPrintLabel(round.ok)} · ${getKitchenSyncLabel(round.status)} · ${formatDate(round.createdAt)}</div>
-    `,
-          )
-          .join('')
-      : '<div class="cart-sub">Sin rondas de cocina registradas.</div>';
   const selectedTableId = state.openTabsDetail?.tab.posTableId || state.openTabsSelectedTableId || null;
   const selectedTableName =
     (selectedTableId && state.openTabsSnapshot.tables.find((table) => table.id === selectedTableId)?.name) || 'Sin mesa';
@@ -1569,7 +1835,7 @@ function flushRender(): void {
 
         <div class="field">
           <span class="checkout-method-label">Metodo de pago</span>
-          <div class="payment-method-group" role="radiogroup" aria-label="Metodo de pago">
+          <div class="payment-method-group ${isEmployeePaymentsEnabled(state.runtimeConfig) ? 'is-three' : 'is-two'}" role="radiogroup" aria-label="Metodo de pago">
             <button
               class="payment-method-btn ${state.checkoutPaymentMethod === 'efectivo' ? 'is-active' : ''}"
               type="button"
@@ -1594,10 +1860,28 @@ function flushRender(): void {
               <span class="payment-method-icon">${iconCreditCard()}</span>
               <span class="payment-method-text">Tarjeta</span>
             </button>
+            ${
+              isEmployeePaymentsEnabled(state.runtimeConfig)
+                ? `
+            <button
+              class="payment-method-btn ${state.checkoutPaymentMethod === 'employee' ? 'is-active' : ''}"
+              type="button"
+              role="radio"
+              aria-checked="${state.checkoutPaymentMethod === 'employee' ? 'true' : 'false'}"
+              aria-label="Pago Empleado"
+              data-action="set-checkout-payment"
+              data-value="employee"
+            >
+              <span class="payment-method-icon">${iconUser()}</span>
+              <span class="payment-method-text">Pago Empleado</span>
+            </button>
+            `
+                : ''
+            }
           </div>
         </div>
 
-        <div class="checkout-cash-wrap ${state.checkoutPaymentMethod === 'tarjeta' ? 'is-collapsed' : ''}">
+        <div class="checkout-cash-wrap ${isNonCashPaymentMethod(state.checkoutPaymentMethod) ? 'is-collapsed' : ''}">
           <label class="field">
             <span>Pago recibido</span>
             <div class="checkout-received-row">
@@ -1606,7 +1890,7 @@ function flushRender(): void {
           </label>
 
           ${
-            state.checkoutPaymentMethod !== 'tarjeta' && isTouchScreenEnabled(state.runtimeConfig)
+            !isNonCashPaymentMethod(state.checkoutPaymentMethod) && isTouchScreenEnabled(state.runtimeConfig)
               ? `
         <div class="checkout-numpad" data-scan-capture="off">
           <button class="button secondary checkout-numpad-key" data-action="checkout-numpad-input" data-value="1">1</button>
@@ -1642,10 +1926,14 @@ function flushRender(): void {
           </div>
         </div>
 
-        <div class="checkout-card-note ${state.checkoutPaymentMethod === 'tarjeta' ? 'is-visible' : ''}" aria-hidden="${
-          state.checkoutPaymentMethod === 'tarjeta' ? 'false' : 'true'
+        <div class="checkout-card-note ${isNonCashPaymentMethod(state.checkoutPaymentMethod) ? 'is-visible' : ''}" aria-hidden="${
+          isNonCashPaymentMethod(state.checkoutPaymentMethod) ? 'false' : 'true'
         }">
-          El monto se cargara directamente por terminal.
+          ${
+            state.checkoutPaymentMethod === 'employee'
+              ? 'Pago Empleado seleccionado. Se confirmara e imprimira sin captura de efectivo.'
+              : 'El monto se cargara directamente por terminal.'
+          }
         </div>
 
         <div class="modal-actions">
@@ -1781,6 +2069,32 @@ function flushRender(): void {
                 ${state.deviceBindingBusy ? 'disabled' : ''}
               />
             </label>
+            <label class="touch-toggle-row" for="device-employee-payments-enabled">
+              <span class="touch-toggle-copy">
+                <strong>Activar Pago Empleados</strong>
+                <small>${isEmployeePaymentsEnabled(runtime) ? 'Activo' : 'Inactivo'}</small>
+              </span>
+              <input
+                id="device-employee-payments-enabled"
+                type="checkbox"
+                class="touch-toggle-input"
+                ${isEmployeePaymentsEnabled(runtime) ? 'checked' : ''}
+                ${state.deviceBindingBusy ? 'disabled' : ''}
+              />
+            </label>
+            <label class="touch-toggle-row" for="device-split-food-drinks-ticket">
+              <span class="touch-toggle-copy">
+                <strong>Separar Bebidas y Alimentos</strong>
+                <small>${isSplitFoodAndDrinksOnTicketEnabled(runtime) ? 'Activo' : 'Inactivo'}</small>
+              </span>
+              <input
+                id="device-split-food-drinks-ticket"
+                type="checkbox"
+                class="touch-toggle-input"
+                ${isSplitFoodAndDrinksOnTicketEnabled(runtime) ? 'checked' : ''}
+                ${state.deviceBindingBusy ? 'disabled' : ''}
+              />
+            </label>
           </section>
         </div>
 
@@ -1802,6 +2116,7 @@ function flushRender(): void {
     ? state.ordersHistory
         .map((order) => {
           const isTabHistory = order.source === 'tab';
+          const isOpenTab = isTabHistory && order.status === 'OPEN';
           return `
       <tr>
         <td>${formatDate(order.createdAt)}</td>
@@ -1821,16 +2136,29 @@ function flushRender(): void {
                   }>Comandas</button>`
                 : ''
             }
+            ${
+              !isTabHistory
+                ? `
             <button class="button secondary history-action-btn" data-action="order-reprint" data-id="${order.id}" ${
-              state.ordersHistoryActionBusy || order.status === 'CANCELED' || isTabHistory ? 'disabled' : ''
+              state.ordersHistoryActionBusy || order.status === 'CANCELED' ? 'disabled' : ''
             }>
               Reimprimir
             </button>
             <button class="button secondary history-action-btn danger" data-action="order-cancel" data-id="${order.id}" ${
-              state.ordersHistoryActionBusy || order.status === 'CANCELED' || isTabHistory ? 'disabled' : ''
+              state.ordersHistoryActionBusy || order.status === 'CANCELED' ? 'disabled' : ''
             }>
               Cancelar
             </button>
+            `
+                : ''
+            }
+            ${
+              isOpenTab
+                ? `<button class="button secondary history-action-btn danger" data-action="tab-cancel-from-history" data-id="${order.id}" ${
+                    state.ordersHistoryActionBusy ? 'disabled' : ''
+                  }>Cancelar mesa</button>`
+                : ''
+            }
           </div>
         </td>
       </tr>
@@ -1920,10 +2248,8 @@ function flushRender(): void {
         <td>Comanda ${idx + 1}</td>
         <td>${formatDate(round.createdAt)}</td>
         <td>${round.linesCount}</td>
-        <td>${getKitchenPrintLabel(round.ok)}</td>
-        <td>${getKitchenSyncLabel(round.status)}${round.canceled ? ' (CANCELADA)' : ''}</td>
+        <td>${round.canceled ? 'Cancelada' : 'Activa · Enviada a cocina'}</td>
         <td>${lineDetails}</td>
-        <td>${escapeHtml(round.error || round.cancelReason || '')}</td>
         <td>
           <div class="history-actions">
             <button class="button secondary history-action-btn" data-action="tab-round-reprint" data-id="${round.mutationId}" ${
@@ -1943,7 +2269,7 @@ function flushRender(): void {
             },
           )
           .join('')
-      : '<tr><td colspan="8">Sin comandas registradas.</td></tr>';
+      : '<tr><td colspan="6">Sin comandas registradas.</td></tr>';
   const tabKitchenHistoryHtml = state.tabKitchenHistoryOpen
     ? `
     <div class="modal-overlay">
@@ -1968,10 +2294,8 @@ function flushRender(): void {
                 <th>Comanda</th>
                 <th>Fecha</th>
                 <th>Productos</th>
-                <th>Impresion</th>
-                <th>Sync</th>
+                <th>Estatus</th>
                 <th>Detalle</th>
-                <th>Error</th>
                 <th>Acciones</th>
               </tr>
             </thead>
@@ -2135,6 +2459,11 @@ function flushRender(): void {
                 <select id="open-tabs-payment" class="input">
                   <option value="efectivo" ${state.openTabsPaymentMethod === 'efectivo' ? 'selected' : ''}>Efectivo</option>
                   <option value="tarjeta" ${state.openTabsPaymentMethod === 'tarjeta' ? 'selected' : ''}>Tarjeta</option>
+                  ${
+                    isEmployeePaymentsEnabled(state.runtimeConfig)
+                      ? `<option value="employee" ${state.openTabsPaymentMethod === 'employee' ? 'selected' : ''}>Pago Empleado</option>`
+                      : ''
+                  }
                 </select>
               </label>
               <div class="settings-actions">
@@ -2427,16 +2756,12 @@ function flushRender(): void {
     : state.runtimeConfig?.kioskNumber
       ? `Kiosko ${state.runtimeConfig.kioskNumber}`
       : state.runtimeConfig?.kioskId || 'Kiosko n/a';
-  const userLabel = state.auth.session?.userName || 'Sin sesion';
-  const roleLabel = state.auth.session?.role || 'Invitado';
-  const topbarContextHtml = `
-    <span class="pill"><span class="pill-icon">${iconUser()}</span><span class="pill-text">${escapeHtml(userLabel)}</span></span>
-    <span class="pill"><span class="pill-text">${escapeHtml(roleLabel)}</span></span>
-    <span class="pill"><span class="pill-text">${escapeHtml(kioskLabel)}</span></span>
-  `;
+  const tenantLabel = formatTenantLabel(state.runtimeConfig?.tenantSlug);
+  const topbarContextHtml = '';
   const currentTheme = getTheme();
   const themeIcon = currentTheme === 'dark' ? iconSun() : iconMoon();
   const themeLabel = currentTheme === 'dark' ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro';
+  const ordersHistoryCount = state.ordersHistory.length;
 
   const headerActionsHtml = state.activation.required || state.activation.blocked
     ? ''
@@ -2444,23 +2769,20 @@ function flushRender(): void {
     <div class="action-group action-group-operation">
       <span class="action-group-label">Operacion</span>
       <div class="action-group-row">
-        ${
-          canSeeTools
-            ? `
         <button class="button ghost tools-item tools-standalone" data-action="open-order-history" ${
-          state.busy || hasSaleInProgress() ? 'disabled' : ''
+          state.busy ? 'disabled' : ''
         }>
           <span class="tools-item-icon">${iconHistory()}</span>
           <span class="tools-item-label">Historial del dia</span>
+          <span class="tools-count-chip">${ordersHistoryCount}</span>
         </button>
-        `
-            : ''
-        }
-        <button class="button secondary mode-toggle ${state.tableModeEnabled ? 'active' : ''}" data-action="toggle-table-mode" ${state.busy ? 'disabled' : ''}>
+        <button class="${
+          state.tableModeEnabled ? 'button secondary mode-toggle active' : 'button ghost tools-item tools-standalone mode-toggle'
+        }" data-action="toggle-table-mode" ${state.busy ? 'disabled' : ''}>
           <span class="btn-icon">${iconTable()}</span>
           <span>${state.tableModeEnabled ? 'Modo mesa ON' : 'Modo mesa OFF'}</span>
         </button>
-        <button class="button secondary sync-button ${state.manualSync.inFlight ? 'is-loading' : ''}" data-action="sync-outbox" ${state.manualSync.inFlight ? 'disabled' : ''}>
+        <button class="button ghost tools-item tools-standalone sync-button ${state.manualSync.inFlight ? 'is-loading' : ''}" data-action="sync-outbox" ${state.manualSync.inFlight ? 'disabled' : ''}>
           <span class="btn-icon sync-icon">${iconSync()}</span>
           <span>Sincronizar</span>
         </button>
@@ -2530,7 +2852,8 @@ function flushRender(): void {
       </div>
     </div>
   `;
-  const subtitleText = 'Offline-first';
+  const titleText = tenantLabel;
+  const subtitleText = `Kiosk POS · ${kioskLabel}`;
 
   const cartPanelHtml = `
     <div class="cart-head">
@@ -2546,11 +2869,6 @@ function flushRender(): void {
                 }`
               : 'Selecciona mesa/tab para operar.'
           }</div><div class="cart-sub">${tableLinesToggleHtml}</div>`
-        : ''
-    }
-    ${
-      state.tableModeEnabled && state.openTabsDetail
-        ? `<div class="cart-sub cart-rounds"><strong>Rondas cocina recientes</strong></div>${kitchenRoundsHtml}`
         : ''
     }
     <div class="cart-list">${cartHtml}</div>
@@ -2589,14 +2907,6 @@ function flushRender(): void {
               </button>
             </div>
           </section>
-          <section class="mesa-block mesa-block-critical">
-            <div class="mesa-block-title">Critico</div>
-            <div class="mesa-danger-row">
-              <button class="button wine-danger" data-action="open-tabs-cancel-tab" ${
-                state.busy || !state.openTabsSelectedTabId ? 'disabled' : ''
-              }>Cancelar mesa</button>
-            </div>
-          </section>
         `
             : `
           <button class="button primary" data-action="open-checkout" ${cartLines.length ? '' : 'disabled'}>Confirmar pedido</button>
@@ -2609,6 +2919,7 @@ function flushRender(): void {
 
   const modalsHtml = `
     ${checkoutHtml}
+    ${renderSupervisorOverrideModal()}
     ${settingsHtml}
     ${deviceBindingHtml}
     ${barcodeBindingHtml}
@@ -2656,9 +2967,16 @@ function flushRender(): void {
             ui.topbarSubtitle.textContent = subtitleText;
             ui.topbarSubtitle.title = state.status;
           }
+          if (ui.topbarTitle) {
+            ui.topbarTitle.textContent = titleText;
+            ui.topbarTitle.title = state.status;
+          }
           if (ui.topbarContext) {
             ui.topbarContext.innerHTML = topbarContextHtml;
             ui.topbarContext.title = state.status;
+          }
+          if (ui.topbarLogo) {
+            ui.topbarLogo.src = controliaMarkUrl;
           }
         });
       },
@@ -2804,7 +3122,7 @@ function closeDeviceBinding(): void {
 }
 
 function checkoutNumpadInput(value: string): void {
-  if (!state.checkoutOpen || state.checkoutPaymentMethod === 'tarjeta' || !isTouchScreenEnabled(state.runtimeConfig))
+  if (!state.checkoutOpen || isNonCashPaymentMethod(state.checkoutPaymentMethod) || !isTouchScreenEnabled(state.runtimeConfig))
     return;
   if (!/^\d$/.test(value)) return;
   state.receivedInput = `${state.receivedInput}${value}`.replace(/^0+(?=\d)/, '');
@@ -2814,7 +3132,7 @@ function checkoutNumpadInput(value: string): void {
 }
 
 function checkoutNumpadBackspace(): void {
-  if (!state.checkoutOpen || state.checkoutPaymentMethod === 'tarjeta' || !isTouchScreenEnabled(state.runtimeConfig))
+  if (!state.checkoutOpen || isNonCashPaymentMethod(state.checkoutPaymentMethod) || !isTouchScreenEnabled(state.runtimeConfig))
     return;
   state.receivedInput = state.receivedInput.slice(0, -1);
   state.enterConfirmArmedAt = null;
@@ -2823,7 +3141,7 @@ function checkoutNumpadBackspace(): void {
 }
 
 function checkoutNumpadClear(): void {
-  if (!state.checkoutOpen || state.checkoutPaymentMethod === 'tarjeta' || !isTouchScreenEnabled(state.runtimeConfig))
+  if (!state.checkoutOpen || isNonCashPaymentMethod(state.checkoutPaymentMethod) || !isTouchScreenEnabled(state.runtimeConfig))
     return;
   state.receivedInput = '';
   state.enterConfirmArmedAt = null;
@@ -2858,9 +3176,18 @@ async function resetDeviceBinding(): Promise<void> {
     }
 
     state.runtimeConfig = await window.posKiosk.getRuntimeConfig();
+    const resolve = resolveSupervisorOverridePrompt;
+    resolveSupervisorOverridePrompt = null;
+    if (resolve) resolve({ ok: false });
     state.auth.session = null;
     state.auth.selectedUserId = '';
     state.auth.pinInput = '';
+    state.auth.supervisorOverrideOpen = false;
+    state.auth.supervisorOverrideReason = '';
+    state.auth.supervisorPinInput = '';
+    state.auth.supervisorOverrideInFlight = false;
+    state.auth.supervisorOverrideMessage = '';
+    state.auth.supervisorOverrideKind = 'info';
     state.auth.message = 'Inicia sesion para operar ventas.';
     state.auth.kind = 'info';
     state.auth.users = [];
@@ -2884,11 +3211,11 @@ async function resetDeviceBinding(): Promise<void> {
   }
 }
 
-async function saveTouchScreenSetting(): Promise<void> {
+async function saveDeviceConfigToggles(): Promise<void> {
   if (state.deviceBindingBusy) return;
   const runtime = ensureRuntimeConfigMutable();
   state.deviceBindingBusy = true;
-  state.deviceBindingStatusMessage = 'Guardando configuracion touch...';
+  state.deviceBindingStatusMessage = 'Guardando parametros del dispositivo...';
   state.deviceBindingStatusKind = 'info';
   bumpRuntimeVersion();
   render();
@@ -2896,17 +3223,27 @@ async function saveTouchScreenSetting(): Promise<void> {
   try {
     await window.posKiosk.setRuntimeConfig({
       touchScreenEnabled: isTouchScreenEnabled(runtime),
+      employeePaymentsEnabled: isEmployeePaymentsEnabled(runtime),
+      splitFoodAndDrinksOnTicket: isSplitFoodAndDrinksOnTicketEnabled(runtime),
     });
     state.runtimeConfig = await window.posKiosk.getRuntimeConfig();
     if (!isTouchScreenEnabled(state.runtimeConfig)) {
       state.checkoutNumpadOpen = false;
       bumpCartVersion();
     }
-    state.deviceBindingStatusMessage = 'Configuracion touch guardada.';
+    if (!isEmployeePaymentsEnabled(state.runtimeConfig) && state.checkoutPaymentMethod === 'employee') {
+      state.checkoutPaymentMethod = 'efectivo';
+      bumpCartVersion();
+    }
+    if (!isEmployeePaymentsEnabled(state.runtimeConfig) && state.openTabsPaymentMethod === 'employee') {
+      state.openTabsPaymentMethod = 'efectivo';
+      bumpOpenTabsVersion();
+    }
+    state.deviceBindingStatusMessage = 'Parametros del dispositivo guardados.';
     state.deviceBindingStatusKind = 'success';
   } catch (error) {
     state.deviceBindingStatusMessage =
-      error instanceof Error ? error.message : 'No se pudo guardar la configuracion touch.';
+      error instanceof Error ? error.message : 'No se pudieron guardar los parametros del dispositivo.';
     state.deviceBindingStatusKind = 'error';
   } finally {
     state.deviceBindingBusy = false;
@@ -3615,15 +3952,20 @@ async function reorderTable(tableId: string, direction: 'up' | 'down'): Promise<
 }
 
 async function loadOrderHistory(): Promise<void> {
-  state.ordersHistory = await window.posKiosk.listOrderHistory(80);
+  state.ordersHistory = await window.posKiosk.listOrderHistory(100);
   bumpUiVersion();
 }
 
-async function openOrderHistory(): Promise<void> {
-  if (state.busy || hasSaleInProgress()) {
-    setStatus('Termina o limpia la venta en curso antes de abrir el historial.', 'info');
-    return;
+async function refreshOrderHistoryCounter(): Promise<void> {
+  try {
+    await loadOrderHistory();
+  } catch {
+    // Keep UI responsive even if history load fails.
   }
+}
+
+async function openOrderHistory(): Promise<void> {
+  if (state.busy) return;
 
   state.ordersHistoryOpen = true;
   state.ordersHistoryLoading = true;
@@ -3740,6 +4082,56 @@ async function cancelOrderFromHistory(orderId: string): Promise<void> {
     triggerSyncSoon();
   } catch (error) {
     state.ordersHistoryStatusMessage = error instanceof Error ? error.message : 'Error cancelando orden.';
+    state.ordersHistoryStatusKind = 'error';
+    setStatus(state.ordersHistoryStatusMessage, 'error');
+  } finally {
+    state.ordersHistoryActionBusy = false;
+    bumpUiVersion();
+    render();
+  }
+}
+
+async function cancelTabFromHistory(tabId: string): Promise<void> {
+  if (!(await ensurePosSessionOrBlock())) return;
+  if (!(await ensureSupervisorOverrideIfNeeded('cancelar mesa'))) return;
+  if (state.ordersHistoryActionBusy) return;
+  const accepted = window.confirm('Esta accion cancelara la mesa seleccionada. Deseas continuar?');
+  if (!accepted) return;
+
+  state.ordersHistoryActionBusy = true;
+  state.ordersHistoryStatusMessage = 'Cancelando mesa...';
+  state.ordersHistoryStatusKind = 'info';
+  bumpUiVersion();
+  render();
+
+  try {
+    const result = await window.posKiosk.cancelTab(tabId);
+    if (!result.ok) {
+      state.ordersHistoryStatusMessage = result.error || 'No se pudo cancelar la mesa.';
+      state.ordersHistoryStatusKind = 'error';
+      setStatus(state.ordersHistoryStatusMessage, 'error');
+      return;
+    }
+
+    if (state.openTabsSelectedTabId === tabId) {
+      state.openTabsSelectedTabId = '';
+      bumpOpenTabsVersion();
+    }
+
+    // Libera UI de inmediato; refrescos secundarios quedan en background.
+    state.ordersHistoryOpen = false;
+    state.ordersHistoryStatusMessage = 'Mesa cancelada correctamente.';
+    state.ordersHistoryStatusKind = 'success';
+    setStatus('Mesa cancelada correctamente.', 'success');
+    triggerSyncSoon();
+
+    void (async () => {
+      await refreshOrderHistoryCounter();
+      await refreshOpenTabsSnapshot(false);
+      render();
+    })();
+  } catch (error) {
+    state.ordersHistoryStatusMessage = error instanceof Error ? error.message : 'Error cancelando mesa.';
     state.ordersHistoryStatusKind = 'error';
     setStatus(state.ordersHistoryStatusMessage, 'error');
   } finally {
@@ -3875,7 +4267,7 @@ async function confirmSale(): Promise<void> {
     try {
       const totalCents = getActiveTabTotalCents();
       const pagoRecibidoCents =
-        state.checkoutPaymentMethod === 'tarjeta' ? totalCents : parseReceivedCents();
+        isNonCashPaymentMethod(state.checkoutPaymentMethod) ? totalCents : parseReceivedCents();
       const result = await window.posKiosk.closeTabPaid({
         tabId: state.openTabsSelectedTabId,
         metodoPago: state.checkoutPaymentMethod,
@@ -3891,9 +4283,12 @@ async function confirmSale(): Promise<void> {
       state.receivedInput = '';
       bumpCartVersion();
       void applyScanContext();
+      state.tableModeEnabled = false;
+      state.openTabsShowSentLines = false;
       state.openTabsSelectedTabId = '';
       bumpOpenTabsVersion();
       await refreshOpenTabsSnapshot(false);
+      await refreshOrderHistoryCounter();
       triggerSyncSoon();
 
       if (result.printStatus === 'FAILED') {
@@ -3919,6 +4314,7 @@ async function confirmSale(): Promise<void> {
     name: line.item.name,
     qty: line.qty,
     unitPriceCents: line.item.priceCents,
+    itemType: line.item.type || null,
   }));
 
   state.busy = true;
@@ -3929,7 +4325,7 @@ async function confirmSale(): Promise<void> {
     const totalCents = getCurrentSaleTotalCents();
     const result = await window.posKiosk.createSaleAndPrint({
       lines,
-      pagoRecibidoCents: state.checkoutPaymentMethod === 'tarjeta' ? totalCents : parseReceivedCents(),
+      pagoRecibidoCents: isNonCashPaymentMethod(state.checkoutPaymentMethod) ? totalCents : parseReceivedCents(),
       metodoPago: state.checkoutPaymentMethod,
     });
 
@@ -3943,6 +4339,7 @@ async function confirmSale(): Promise<void> {
     state.receivedInput = '';
     bumpCartVersion();
     void applyScanContext();
+    await refreshOrderHistoryCounter();
 
     if (result.printStatus === 'FAILED') {
       state.statusBar.print.phase = 'error';
@@ -4241,6 +4638,7 @@ async function openTabForSelectedTable(): Promise<void> {
     state.openTabsShowSentLines = false;
     bumpOpenTabsVersion();
     await refreshOpenTabsSnapshot(true);
+    await refreshOrderHistoryCounter();
     setOpenTabsStatus(`Mesa abierta: ${result.folioText || result.tabId}.`, 'success');
     triggerSyncSoon();
   } catch (error) {
@@ -4419,9 +4817,12 @@ async function closeSelectedTabPaid(): Promise<void> {
       setOpenTabsStatus(result.error || 'No se pudo cerrar cuenta.', 'error');
       return;
     }
+    state.tableModeEnabled = false;
+    state.openTabsShowSentLines = false;
     state.openTabsSelectedTabId = '';
     bumpOpenTabsVersion();
     await refreshOpenTabsSnapshot(false);
+    await refreshOrderHistoryCounter();
     setOpenTabsStatus(
       result.printStatus === 'FAILED'
         ? `Cuenta cerrada con error de impresion final.${result.error ? ` ${result.error}` : ''}`
@@ -4456,6 +4857,7 @@ async function cancelSelectedTab(): Promise<void> {
     state.openTabsSelectedTabId = '';
     bumpOpenTabsVersion();
     await refreshOpenTabsSnapshot(false);
+    await refreshOrderHistoryCounter();
     setOpenTabsStatus('Tab cancelada.', 'success');
     triggerSyncSoon();
   } catch (error) {
@@ -4548,7 +4950,12 @@ const handleAppInput = (event: Event): void => {
     return;
   }
   if (id === 'pos-login-pin') {
-    state.auth.pinInput = target.value.replace(/\s+/g, '');
+    state.auth.pinInput = normalizePinInput(target.value);
+    bumpAuthVersion();
+    return;
+  }
+  if (id === 'supervisor-override-pin') {
+    state.auth.supervisorPinInput = normalizePinInput(target.value);
     bumpAuthVersion();
     return;
   }
@@ -4603,7 +5010,11 @@ const handleAppChange = (event: Event): void => {
     return;
   }
   if (id === 'open-tabs-payment') {
-    state.openTabsPaymentMethod = target.value === 'tarjeta' ? 'tarjeta' : 'efectivo';
+    if (target.value === 'employee' && isEmployeePaymentsEnabled(state.runtimeConfig)) {
+      state.openTabsPaymentMethod = 'employee';
+    } else {
+      state.openTabsPaymentMethod = target.value === 'tarjeta' ? 'tarjeta' : 'efectivo';
+    }
     bumpOpenTabsVersion();
     return;
   }
@@ -4626,7 +5037,31 @@ const handleAppChange = (event: Event): void => {
     }
     bumpRuntimeVersion();
     queueRender('device-touch-screen-enabled');
-    void saveTouchScreenSetting();
+    void saveDeviceConfigToggles();
+    return;
+  }
+  if (id === 'device-employee-payments-enabled' && target instanceof HTMLInputElement) {
+    const runtime = ensureRuntimeConfigMutable();
+    runtime.employeePaymentsEnabled = target.checked;
+    if (!target.checked && state.checkoutPaymentMethod === 'employee') {
+      state.checkoutPaymentMethod = 'efectivo';
+      bumpCartVersion();
+    }
+    if (!target.checked && state.openTabsPaymentMethod === 'employee') {
+      state.openTabsPaymentMethod = 'efectivo';
+      bumpOpenTabsVersion();
+    }
+    bumpRuntimeVersion();
+    queueRender('device-employee-payments-enabled');
+    void saveDeviceConfigToggles();
+    return;
+  }
+  if (id === 'device-split-food-drinks-ticket' && target instanceof HTMLInputElement) {
+    const runtime = ensureRuntimeConfigMutable();
+    runtime.splitFoodAndDrinksOnTicket = target.checked;
+    bumpRuntimeVersion();
+    queueRender('device-split-food-drinks-ticket');
+    void saveDeviceConfigToggles();
     return;
   }
   if (id === 'printer-debug-include-footer' && target instanceof HTMLInputElement) {
@@ -4641,7 +5076,10 @@ const handleAppKeydown = async (event: Event): Promise<void> => {
   const paymentMethodBtn = target.closest('.payment-method-btn') as HTMLElement | null;
   if (paymentMethodBtn && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !event.repeat) {
     event.preventDefault();
-    const next = event.key === 'ArrowLeft' ? 'efectivo' : 'tarjeta';
+    const methods = getAvailablePaymentMethods();
+    const currentIndex = Math.max(0, methods.indexOf(state.checkoutPaymentMethod));
+    const direction = event.key === 'ArrowLeft' ? -1 : 1;
+    const next = methods[(currentIndex + direction + methods.length) % methods.length] || 'efectivo';
     setCheckoutPaymentMethod(next);
     requestAnimationFrame(() => {
       const nextBtn = document.querySelector(
@@ -4654,6 +5092,11 @@ const handleAppKeydown = async (event: Event): Promise<void> => {
   if (target.id === 'pos-login-pin' && event.key === 'Enter' && !event.repeat) {
     event.preventDefault();
     await loginPosUser();
+    return;
+  }
+  if (target.id === 'supervisor-override-pin' && event.key === 'Enter' && !event.repeat) {
+    event.preventDefault();
+    await submitSupervisorOverride();
     return;
   }
   if (target.id !== 'input-received') return;
@@ -4711,7 +5154,15 @@ const handleAppClick = async (event: Event): Promise<void> => {
     handlers: {
       activateDeviceClaimFlow,
       loginPosUser,
+      loginPinNumpadInput,
+      loginPinNumpadBackspace,
+      loginPinNumpadClear,
       logoutPosUser,
+      closeSupervisorOverride,
+      supervisorPinNumpadInput,
+      supervisorPinNumpadBackspace,
+      supervisorPinNumpadClear,
+      submitSupervisorOverride,
       toggleRenderMetrics: () => {
         renderRuntime.metricsEnabled = !renderRuntime.metricsEnabled;
         setStatus(`Metricas de render ${renderRuntime.metricsEnabled ? 'activadas' : 'desactivadas'}.`, 'info');
@@ -4805,7 +5256,7 @@ const handleAppClick = async (event: Event): Promise<void> => {
       openDeviceBinding,
       closeDeviceBinding,
       resetDeviceBinding,
-      saveTouchScreenSetting,
+      saveDeviceConfigToggles,
       bindingFilterCategory: (categoryId: string) => {
         state.barcodeBindingCategoryId = categoryId;
         bumpCatalogVersion();
@@ -4844,6 +5295,7 @@ const handleAppClick = async (event: Event): Promise<void> => {
       refreshOrderHistory,
       reprintOrderFromHistory,
       cancelOrderFromHistory,
+      cancelTabFromHistory,
       closeSettings,
       saveSettings,
       selectCategory: (categoryId: string) => {
@@ -5049,6 +5501,7 @@ async function bootstrap(): Promise<void> {
     await window.posScanner.setSettings(runtimeScannerSettingsToInput(state.runtimeConfig));
     await applyScanContext();
     await refreshSyncStatus();
+    await refreshOrderHistoryCounter();
     if (!state.snapshot?.items.length) {
       setStatus('Catalogo local vacio. Presiona "Sincronizar catalogo".', 'info');
     } else {

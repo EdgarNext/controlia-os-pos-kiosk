@@ -18,7 +18,7 @@ export function createOpenTabsSlice() {
     openTabsGenerateCountInput: '12',
     openTabsGeneratePrefixInput: 'Mesa',
     openTabsGenerateStartAtInput: '1',
-    openTabsPaymentMethod: 'efectivo' as 'efectivo' | 'tarjeta',
+    openTabsPaymentMethod: 'efectivo' as 'efectivo' | 'tarjeta' | 'employee',
     openTabsForceRefresh: false,
     openTabsIsPosMaster: false,
     tableModeEnabled: false,

@@ -3,7 +3,7 @@ function baseIcon(path: string): string {
 }
 
 export function iconGear(): string {
-  return baseIcon('M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7ZM19.4 15.1l1-1.8-1.6-2.7-2.1.2a6.8 6.8 0 0 0-1.2-.7l-.7-2-3.1-.1-.8 2a7 7 0 0 0-1.2.7l-2.1-.2-1.5 2.7 1 1.8a7.2 7.2 0 0 0 0 1.4l-1 1.8 1.5 2.7 2.1-.2c.4.3.8.5 1.2.7l.8 2h3.1l.7-2c.4-.2.8-.4 1.2-.7l2.1.2 1.6-2.7-1-1.8c.1-.5.1-.9 0-1.4Z');
+  return baseIcon('M4 7h8M15 7h5M9 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0ZM4 12h5M11 12h9M13 12a2 2 0 1 1-4 0 2 2 0 0 1 4 0ZM4 17h11M18 17h2M20 17a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z');
 }
 
 export function iconSync(): string {
@@ -68,4 +68,28 @@ export function iconBackspace(): string {
 
 export function iconClear(): string {
   return baseIcon('M4 6h16M9 6V4h6v2m-8 0 1 14h8l1-14');
+}
+
+export function iconCategory(): string {
+  return baseIcon('M4 5.5h7v7H4zM13 5.5h7v7h-7zM4 13.5h7v7H4zM13 13.5h7v7h-7z');
+}
+
+export function iconCoffeeCup(): string {
+  return baseIcon('M5 9h10v6a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4V9Zm10 1h2a2 2 0 1 1 0 4h-2M8 4v2m4-2v2');
+}
+
+export function iconBurger(): string {
+  return baseIcon('M4 11h16M5 15h14M6 18h12M6 11a6 6 0 0 1 12 0M8.5 13h.01M12 13h.01M15.5 13h.01');
+}
+
+export function iconPizza(): string {
+  return baseIcon('M4 5c5 3 11 3 16 0l-8 15L4 5Zm8 7h.01M9.5 10h.01M14.5 10h.01');
+}
+
+export function iconIceCream(): string {
+  return baseIcon('M12 4a4 4 0 0 1 4 4v2h-8V8a4 4 0 0 1 4-4Zm-3 6h6l-2.2 10h-1.6L9 10Z');
+}
+
+export function iconDrink(): string {
+  return baseIcon('M7 4h10l-1.8 16h-6.4L7 4Zm3 0V2m4 2V2');
 }

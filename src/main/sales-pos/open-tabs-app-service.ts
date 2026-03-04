@@ -497,9 +497,9 @@ export class OpenTabsAppService {
       const runtime = this.requireRuntime();
       const detail = this.getTabDetail(input.tabId);
       const totalCents = detail.lines.reduce((sum, line) => sum + line.lineTotalCents, 0);
-      const metodoPago = input.metodoPago === 'tarjeta' ? 'tarjeta' : 'efectivo';
+      const metodoPago = input.metodoPago === 'tarjeta' || input.metodoPago === 'employee' ? input.metodoPago : 'efectivo';
       const pagoRecibidoCents =
-        metodoPago === 'tarjeta'
+        metodoPago === 'tarjeta' || metodoPago === 'employee'
           ? totalCents
           : Number.isFinite(input.pagoRecibidoCents)
             ? Number(input.pagoRecibidoCents)
@@ -511,7 +511,13 @@ export class OpenTabsAppService {
 
       const cambioCents = Math.max(pagoRecibidoCents - totalCents, 0);
       const printResult = await this.printService.printV2({
-        rawBase64: this.buildFinalTicketRawBase64(detail, metodoPago, pagoRecibidoCents, cambioCents),
+        rawBase64: this.buildFinalTicketRawBase64(
+          detail,
+          metodoPago,
+          pagoRecibidoCents,
+          cambioCents,
+          this.ordersRepository.getRuntimeConfig().splitFoodAndDrinksOnTicket === true,
+        ),
         jobName: `tab_close_${detail.tab.folioText}_${Date.now()}`,
         tenantId: runtime.tenantId,
         kioskId: runtime.kioskId,
@@ -683,10 +689,12 @@ export class OpenTabsAppService {
 
   private buildFinalTicketRawBase64(
     detail: TabDetailView,
-    metodoPago: 'efectivo' | 'tarjeta',
+    metodoPago: 'efectivo' | 'tarjeta' | 'employee',
     pagoRecibidoCents: number,
     cambioCents: number,
+    splitFoodAndDrinksOnTicket: boolean,
   ): string {
+    const productTypeById = new Map(this.catalogRepository.getCatalogSnapshot().items.map((item) => [item.id, item.type]));
     const groupedByProduct = new Map<string, { name: string; qty: number; totalCents: number }>();
     detail.lines.forEach((line) => {
       const existing = groupedByProduct.get(line.productId);
@@ -701,9 +709,14 @@ export class OpenTabsAppService {
         totalCents: line.unitPriceCents * line.qty,
       });
     });
-    const lines = Array.from(groupedByProduct.values())
-      .map((line) => `${line.qty}x ${line.name} ${formatMoney(line.totalCents)}`)
-      .join('\n');
+    const groupedLines = Array.from(groupedByProduct.entries()).map(([productId, line]) => ({
+      ...line,
+      itemType: productTypeById.get(productId) || null,
+      isDrink: isDrinkLine(productTypeById.get(productId), line.name),
+    }));
+    const lines = splitFoodAndDrinksOnTicket
+      ? buildSplitTicketLines(groupedLines).join('\n')
+      : groupedLines.map((line) => `${line.qty}x ${line.name} ${formatMoney(line.totalCents)}`).join('\n');
     const totalCents = detail.lines.reduce((sum, line) => sum + line.lineTotalCents, 0);
     const content = [
       'TICKET FINAL',
@@ -895,6 +908,47 @@ function formatDateTimeMx(value: string): string {
   }).format(date);
 }
 
-function formatPaymentMethod(value: 'efectivo' | 'tarjeta'): string {
-  return value === 'tarjeta' ? 'Tarjeta de credito' : 'Efectivo';
+function formatPaymentMethod(value: 'efectivo' | 'tarjeta' | 'employee'): string {
+  if (value === 'tarjeta') return 'Tarjeta de credito';
+  if (value === 'employee') return 'Pago Empleado';
+  return 'Efectivo';
+}
+
+function buildSplitTicketLines(
+  lines: Array<{ name: string; qty: number; totalCents: number; isDrink: boolean; itemType: string | null }>,
+): string[] {
+  const foods = lines.filter((line) => !line.isDrink);
+  const drinks = lines.filter((line) => line.isDrink);
+  if (!foods.length || !drinks.length) {
+    return lines.map((line) => `${line.qty}x ${line.name} ${formatMoney(line.totalCents)}`);
+  }
+  return [
+    ...foods.map((line) => `${line.qty}x ${line.name} ${formatMoney(line.totalCents)}`),
+    '',
+    '',
+    '',
+    '',
+    '------------------------------',
+    '',
+    '',
+    '',
+    '',
+    ...drinks.map((line) => `${line.qty}x ${line.name} ${formatMoney(line.totalCents)}`),
+  ];
+}
+
+function isDrinkLine(itemType: string | null | undefined, name: string): boolean {
+  const type = String(itemType || '').trim().toLowerCase();
+  if (type) {
+    if (/(bebida|drink|beverage|juice|soda|coffee|tea|agua|cerveza|beer|cocktail|refresco)/.test(type)) {
+      return true;
+    }
+    if (/(food|meal|alimento|comida|snack|postre|dessert)/.test(type)) {
+      return false;
+    }
+  }
+  const normalizedName = String(name || '').trim().toLowerCase();
+  return /(agua|cafe|café|te|té|jugo|juice|refresco|soda|cola|cerveza|beer|vino|wine|coctel|cocktail)/.test(
+    normalizedName,
+  );
 }

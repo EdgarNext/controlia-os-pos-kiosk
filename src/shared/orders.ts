@@ -5,12 +5,13 @@ export interface SaleLineInput {
   name: string;
   qty: number;
   unitPriceCents: number;
+  itemType?: string | null;
 }
 
 export interface CreateSaleInput {
   lines: SaleLineInput[];
   pagoRecibidoCents: number;
-  metodoPago: 'efectivo' | string;
+  metodoPago: 'efectivo' | 'tarjeta' | 'employee' | string;
 }
 
 export interface CreateSaleResult {
@@ -102,6 +103,8 @@ export interface RuntimeConfig {
   scannerAllowEnterTerminator: boolean | null;
   scannerAllowedCharsPattern: string | null;
   touchScreenEnabled: boolean | null;
+  employeePaymentsEnabled: boolean | null;
+  splitFoodAndDrinksOnTicket: boolean | null;
   posSessionTimeoutMinutes: number | null;
   posSessionUserId: string | null;
   posSessionUserName: string | null;

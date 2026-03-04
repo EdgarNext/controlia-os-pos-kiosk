@@ -5,7 +5,7 @@ export function createCartSlice() {
     checkoutNumpadOpen: false,
     receivedInput: '',
     enterConfirmArmedAt: null as number | null,
-    checkoutPaymentMethod: 'efectivo' as 'efectivo' | 'tarjeta',
+    checkoutPaymentMethod: 'efectivo' as 'efectivo' | 'tarjeta' | 'employee',
     cart: {
       version: 0,
     },

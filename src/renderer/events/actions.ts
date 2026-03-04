@@ -15,7 +15,15 @@ export type ActionContext = {
   handlers: {
     activateDeviceClaimFlow: () => Promise<void>;
     loginPosUser: () => Promise<void>;
+    loginPinNumpadInput: (value: string) => void;
+    loginPinNumpadBackspace: () => void;
+    loginPinNumpadClear: () => void;
     logoutPosUser: () => Promise<void>;
+    closeSupervisorOverride: () => void;
+    supervisorPinNumpadInput: (value: string) => void;
+    supervisorPinNumpadBackspace: () => void;
+    supervisorPinNumpadClear: () => void;
+    submitSupervisorOverride: () => Promise<void>;
     toggleTheme: () => void;
     toggleRenderMetrics: () => void;
     activateTableMode: () => Promise<void>;
@@ -52,7 +60,7 @@ export type ActionContext = {
     openDeviceBinding: () => Promise<void>;
     closeDeviceBinding: () => void;
     resetDeviceBinding: () => Promise<void>;
-    saveTouchScreenSetting: () => Promise<void>;
+    saveDeviceConfigToggles: () => Promise<void>;
     bindingFilterCategory: (id: string) => void;
     bindingSelectItem: (id: string) => void;
     syncCatalog: () => Promise<void>;
@@ -80,6 +88,7 @@ export type ActionContext = {
     refreshOrderHistory: () => Promise<void>;
     reprintOrderFromHistory: (id: string) => Promise<void>;
     cancelOrderFromHistory: (id: string) => Promise<void>;
+    cancelTabFromHistory: (id: string) => Promise<void>;
     closeSettings: () => void;
     saveSettings: () => Promise<void>;
     selectCategory: (id: string) => void;
@@ -115,6 +124,50 @@ export const actions: Record<string, (ctx: ActionContext) => Promise<void> | voi
     ctx.invalidateMany(['gate:auth', 'shell', 'status', 'modals']);
     ctx.queueRender('action:pos-login-submit');
   },
+  'pos-login-pin-numpad-input': (ctx) => {
+    const value = String(ctx.target.dataset.value || '');
+    if (!value) return;
+    ctx.handlers.loginPinNumpadInput(value);
+    ctx.invalidate('gate:auth');
+    ctx.queueRender('action:pos-login-pin-numpad-input');
+  },
+  'pos-login-pin-numpad-backspace': (ctx) => {
+    ctx.handlers.loginPinNumpadBackspace();
+    ctx.invalidate('gate:auth');
+    ctx.queueRender('action:pos-login-pin-numpad-backspace');
+  },
+  'pos-login-pin-numpad-clear': (ctx) => {
+    ctx.handlers.loginPinNumpadClear();
+    ctx.invalidate('gate:auth');
+    ctx.queueRender('action:pos-login-pin-numpad-clear');
+  },
+  'supervisor-override-cancel': (ctx) => {
+    ctx.handlers.closeSupervisorOverride();
+    ctx.invalidateMany(['modals', 'status']);
+    ctx.queueRender('action:supervisor-override-cancel');
+  },
+  'supervisor-pin-numpad-input': (ctx) => {
+    const value = String(ctx.target.dataset.value || '');
+    if (!value) return;
+    ctx.handlers.supervisorPinNumpadInput(value);
+    ctx.invalidate('modals');
+    ctx.queueRender('action:supervisor-pin-numpad-input');
+  },
+  'supervisor-pin-numpad-backspace': (ctx) => {
+    ctx.handlers.supervisorPinNumpadBackspace();
+    ctx.invalidate('modals');
+    ctx.queueRender('action:supervisor-pin-numpad-backspace');
+  },
+  'supervisor-pin-numpad-clear': (ctx) => {
+    ctx.handlers.supervisorPinNumpadClear();
+    ctx.invalidate('modals');
+    ctx.queueRender('action:supervisor-pin-numpad-clear');
+  },
+  'supervisor-override-submit': async (ctx) => {
+    await ctx.handlers.submitSupervisorOverride();
+    ctx.invalidateMany(['modals', 'status']);
+    ctx.queueRender('action:supervisor-override-submit');
+  },
   'pos-logout': async (ctx) => {
     await ctx.handlers.logoutPosUser();
     ctx.invalidateMany(['gate:auth', 'shell', 'status', 'modals']);
@@ -133,7 +186,7 @@ export const actions: Record<string, (ctx: ActionContext) => Promise<void> | voi
   'toggle-table-mode': async (ctx) => {
     if (ctx.state.tableModeEnabled) ctx.handlers.deactivateTableMode();
     else await ctx.handlers.activateTableMode();
-    ctx.invalidateMany(['open-tabs', 'cart', 'status', 'modals']);
+    ctx.invalidateMany(['shell', 'open-tabs', 'cart', 'status', 'modals']);
     ctx.queueRender('action:toggle-table-mode');
   },
   'open-tables-settings': async (ctx) => {
@@ -316,7 +369,7 @@ export const actions: Record<string, (ctx: ActionContext) => Promise<void> | voi
     ctx.queueRender('action:reset-device-binding');
   },
   'save-touch-screen-setting': async (ctx) => {
-    await ctx.handlers.saveTouchScreenSetting();
+    await ctx.handlers.saveDeviceConfigToggles();
     ctx.invalidateMany(['modals', 'cart', 'status']);
     ctx.queueRender('action:save-touch-screen-setting');
   },
@@ -456,6 +509,12 @@ export const actions: Record<string, (ctx: ActionContext) => Promise<void> | voi
     ctx.invalidateMany(['modals', 'status']);
     ctx.queueRender('action:order-cancel');
   },
+  'tab-cancel-from-history': async (ctx) => {
+    if (!ctx.id) return;
+    await ctx.handlers.cancelTabFromHistory(ctx.id);
+    ctx.invalidateMany(['shell', 'open-tabs', 'cart', 'modals', 'status']);
+    ctx.queueRender('action:tab-cancel-from-history');
+  },
   'close-settings': (ctx) => {
     ctx.handlers.closeSettings();
     ctx.invalidateMany(['modals', 'status']);
@@ -490,6 +549,16 @@ export const actions: Record<string, (ctx: ActionContext) => Promise<void> | voi
   'add-to-cart': async (ctx) => {
     if (!ctx.id) return;
     await ctx.handlers.addToCart(ctx.id);
+    const cartEl = document.getElementById('region-cart');
+    if (cartEl) {
+      cartEl.classList.remove('is-add-pulse');
+      // Reflow para reiniciar animacion en taps consecutivos.
+      void cartEl.offsetWidth;
+      cartEl.classList.add('is-add-pulse');
+      window.setTimeout(() => {
+        cartEl.classList.remove('is-add-pulse');
+      }, 120);
+    }
     ctx.invalidateMany(['cart', 'status']);
     ctx.queueRender('action:add-to-cart');
   },

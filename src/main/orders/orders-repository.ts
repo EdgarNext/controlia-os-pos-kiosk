@@ -198,6 +198,8 @@ export class OrdersRepository {
           'scanner_allow_enter_terminator',
           'scanner_allowed_chars_pattern',
           'touch_screen_enabled',
+          'employee_payments_enabled',
+          'split_food_drinks_on_ticket',
           'pos_session_timeout_minutes',
           'pos_session_user_id',
           'pos_session_user_name',
@@ -228,6 +230,8 @@ export class OrdersRepository {
       scannerAllowEnterTerminator: parseNullableBoolean(map.get('scanner_allow_enter_terminator')),
       scannerAllowedCharsPattern: map.get('scanner_allowed_chars_pattern') || null,
       touchScreenEnabled: parseNullableBoolean(map.get('touch_screen_enabled')),
+      employeePaymentsEnabled: parseNullableBoolean(map.get('employee_payments_enabled')),
+      splitFoodAndDrinksOnTicket: parseNullableBoolean(map.get('split_food_drinks_on_ticket')),
       posSessionTimeoutMinutes: parseNullableInt(map.get('pos_session_timeout_minutes')),
       posSessionUserId: map.get('pos_session_user_id') || null,
       posSessionUserName: map.get('pos_session_user_name') || null,
@@ -295,6 +299,14 @@ export class OrdersRepository {
         typeof input.touchScreenEnabled === 'boolean'
           ? input.touchScreenEnabled
           : current.touchScreenEnabled,
+      employeePaymentsEnabled:
+        typeof input.employeePaymentsEnabled === 'boolean'
+          ? input.employeePaymentsEnabled
+          : current.employeePaymentsEnabled,
+      splitFoodAndDrinksOnTicket:
+        typeof input.splitFoodAndDrinksOnTicket === 'boolean'
+          ? input.splitFoodAndDrinksOnTicket
+          : current.splitFoodAndDrinksOnTicket,
       posSessionTimeoutMinutes:
         Number.isInteger(input.posSessionTimeoutMinutes) && Number(input.posSessionTimeoutMinutes) > 0
           ? Number(input.posSessionTimeoutMinutes)
@@ -377,6 +389,20 @@ export class OrdersRepository {
         upsert.run({
           key: 'touch_screen_enabled',
           value: next.touchScreenEnabled ? '1' : '0',
+          updated_at: now,
+        });
+      }
+      if (typeof next.employeePaymentsEnabled === 'boolean') {
+        upsert.run({
+          key: 'employee_payments_enabled',
+          value: next.employeePaymentsEnabled ? '1' : '0',
+          updated_at: now,
+        });
+      }
+      if (typeof next.splitFoodAndDrinksOnTicket === 'boolean') {
+        upsert.run({
+          key: 'split_food_drinks_on_ticket',
+          value: next.splitFoodAndDrinksOnTicket ? '1' : '0',
           updated_at: now,
         });
       }
