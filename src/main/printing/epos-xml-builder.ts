@@ -8,6 +8,14 @@ type TextOptions = {
   font?: 'font_a' | 'font_b';
 };
 
+type ImageOptions = {
+  width: number;
+  height: number;
+  align?: 'left' | 'center' | 'right';
+  color?: 'color_1' | 'color_2' | 'color_3' | 'color_4';
+  mode?: 'mono' | 'gray16';
+};
+
 function escapeXml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
@@ -36,6 +44,16 @@ export function text(content: string, options?: TextOptions): string {
     smooth: options?.smooth ? 'true' : undefined,
     font: options?.font,
   })}>${escapeXml(normalized)}</text>`;
+}
+
+export function image(base64Raster: string, options: ImageOptions): string {
+  return `<image${attrs({
+    width: Math.max(8, Math.floor(options.width)),
+    height: Math.max(1, Math.floor(options.height)),
+    align: options.align,
+    color: options.color,
+    mode: options.mode,
+  })}>${base64Raster}</image>`;
 }
 
 export function feed(lines = 1): string {

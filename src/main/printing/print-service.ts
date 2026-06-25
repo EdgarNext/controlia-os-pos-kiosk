@@ -17,6 +17,7 @@ import { PrintJobsRepository } from './print-jobs-repository';
 import { renderKioskTicketEposXml } from './kiosk-ticket-epos-renderer';
 
 export type KioskTicketPrintInput = {
+  headerTitle?: string | null;
   lines: Array<{ name: string; qty: number; unitPriceCents: number; itemType?: string | null }>;
   totalCents: number;
   pagoRecibidoCents: number;
@@ -85,6 +86,7 @@ export class PrintService {
     }
 
     const xml = renderKioskTicketEposXml({
+      headerTitle: input.headerTitle,
       lines: input.lines,
       totalCents: input.totalCents,
       pagoRecibidoCents: input.pagoRecibidoCents,

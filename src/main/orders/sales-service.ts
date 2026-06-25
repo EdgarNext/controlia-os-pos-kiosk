@@ -7,6 +7,7 @@ import type {
 } from '../../shared/orders';
 import { PrintService } from '../printing/print-service';
 import { buildEscPosTextPayload } from '../printing/escpos-utils';
+import { buildSaleTicketLayout, resolveSaleTicketHeaderLabel } from '../printing/kiosk-ticket-layout';
 import type { SyncCoordinator } from '../sync/sync-coordinator';
 import { OrdersRepository } from './orders-repository';
 
@@ -86,6 +87,7 @@ export class SalesService {
     }
     this.syncCoordinator.notifyPendingWork('sale');
 
+    const printedAtIso = new Date().toISOString();
     const rawBase64 = this.buildTicketRawBase64(
       lines,
       totalCents,
@@ -93,17 +95,20 @@ export class SalesService {
       cambioCents,
       input.metodoPago || 'efectivo',
       runtime.splitFoodAndDrinksOnTicket === true,
+      resolveSaleTicketHeaderLabel(runtime),
       created.folioText,
+      printedAtIso,
     );
     try {
       const printResult = await this.printService.printSaleTicket({
+        headerTitle: resolveSaleTicketHeaderLabel(runtime),
         lines,
         totalCents,
         pagoRecibidoCents,
         cambioCents,
         metodoPago: input.metodoPago || 'efectivo',
         folioText: created.folioText,
-        createdAtIso: new Date().toISOString(),
+        createdAtIso: printedAtIso,
         tenantId: runtime.tenantId,
         kioskId: runtime.kioskId,
         orderId: created.orderId,
@@ -186,13 +191,16 @@ export class SalesService {
       order.cambioCents,
       order.metodoPago,
       this.ordersRepository.getRuntimeConfig().splitFoodAndDrinksOnTicket === true,
+      resolveSaleTicketHeaderLabel(this.ordersRepository.getRuntimeConfig()),
       order.folioText,
       order.createdAt,
       true,
     );
 
     try {
+      const runtime = this.ordersRepository.getRuntimeConfig();
       const printResult = await this.printService.printSaleTicket({
+        headerTitle: resolveSaleTicketHeaderLabel(runtime),
         lines: order.lines,
         totalCents: order.totalCents,
         pagoRecibidoCents: order.pagoRecibidoCents,
@@ -267,98 +275,43 @@ export class SalesService {
     cambioCents: number,
     metodoPago: string,
     splitFoodAndDrinksOnTicket: boolean,
+    headerTitle?: string | null,
     folioText?: string,
     createdAtIso?: string,
     isReprint = false,
   ): string {
-    const headerLines: string[] = ['KIOSK POS', isReprint ? 'REIMPRESION' : 'Ticket de venta', `${formatDateTimeMx(new Date().toISOString())}`];
-    if (folioText) {
-      headerLines.push(`Folio: ${folioText}`);
-    }
-    if (createdAtIso && isReprint) {
-      headerLines.push(`Venta original: ${formatDateTimeMx(createdAtIso)}`);
-    }
-    headerLines.push('------------------------------');
-
-    const itemLines = buildTicketItemLines(lines, splitFoodAndDrinksOnTicket);
-
-    const money = (cents: number) =>
-      new Intl.NumberFormat('es-MX', {
-        style: 'currency',
-        currency: 'MXN',
-        minimumFractionDigits: 0,
-      }).format(cents / 100);
-
-    const footerLines = [
-      '------------------------------',
-      `TOTAL: ${money(totalCents)}`,
-      `METODO: ${formatPaymentMethod(metodoPago)}`,
-      `RECIBIDO: ${money(pagoRecibidoCents)}`,
-      `CAMBIO: ${money(cambioCents)}`,
-    ];
-    const payload = buildEscPosTextPayload([...headerLines, ...itemLines, ...footerLines].join('\n'));
+    const layout = buildSaleTicketLayout({
+      headerTitle,
+      lines,
+      totalCents,
+      pagoRecibidoCents,
+      cambioCents,
+      metodoPago,
+      folioText,
+      createdAtIso,
+      isReprint,
+      width: 32,
+      splitFoodAndDrinksOnTicket,
+    });
+    const body = [
+      centerText(layout.headerTitle, 32),
+      ...(layout.headerSubtitle ? [centerText(layout.headerSubtitle, 32)] : []),
+      centerText(layout.ticketLabel, 32),
+      ...layout.metaLines,
+      ...layout.columnHeaderLines,
+      ...layout.itemLines,
+      ...layout.summaryLines,
+      ...layout.footerLines.map((line) => centerText(line, 32)),
+    ].join('\n');
+    const payload = buildEscPosTextPayload(body);
     return payload.toString('base64');
   }
 }
 
-function formatPaymentMethod(value: string): string {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'tarjeta' || normalized === 'card') return 'Tarjeta de credito';
-  if (normalized === 'efectivo' || normalized === 'cash') return 'Efectivo';
-  if (normalized === 'employee') return 'Pago Empleado';
-  return normalized ? normalized : 'Efectivo';
-}
-
-function buildTicketItemLines(
-  lines: Array<{ name: string; qty: number; unitPriceCents: number; itemType?: string | null }>,
-  splitFoodAndDrinksOnTicket: boolean,
-): string[] {
-  const formatted = lines.map((line) => {
-    const lineTotal = new Intl.NumberFormat('es-MX', {
-      style: 'currency',
-      currency: 'MXN',
-      minimumFractionDigits: 0,
-    }).format((line.unitPriceCents * line.qty) / 100);
-    return {
-      text: `${line.qty}x ${line.name} ${lineTotal}`,
-      isDrink: isDrinkLine(line.itemType, line.name),
-    };
-  });
-
-  if (!splitFoodAndDrinksOnTicket) {
-    return formatted.map((line) => line.text);
-  }
-
-  const foods = formatted.filter((line) => !line.isDrink).map((line) => line.text);
-  const drinks = formatted.filter((line) => line.isDrink).map((line) => line.text);
-  if (!foods.length || !drinks.length) {
-    return formatted.map((line) => line.text);
-  }
-  return [...foods, '', '', '', '', '------------------------------', '', '', '', '', ...drinks];
-}
-
-function isDrinkLine(itemType: string | null | undefined, name: string): boolean {
-  const type = String(itemType || '').trim().toLowerCase();
-  if (type) {
-    if (/(bebida|drink|beverage|juice|soda|coffee|tea|agua|cerveza|beer|cocktail|refresco)/.test(type)) {
-      return true;
-    }
-    if (/(food|meal|alimento|comida|snack|postre|dessert)/.test(type)) {
-      return false;
-    }
-  }
-  const normalizedName = String(name || '').trim().toLowerCase();
-  return /(agua|cafe|café|te|té|jugo|juice|refresco|soda|cola|cerveza|beer|vino|wine|coctel|cocktail)/.test(
-    normalizedName,
-  );
-}
-
-function formatDateTimeMx(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('es-MX', {
-    dateStyle: 'short',
-    timeStyle: 'short',
-    hour12: false,
-  }).format(date);
+function centerText(value: string, width: number): string {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (text.length >= width) return text;
+  const leftPad = Math.floor((width - text.length) / 2);
+  return `${' '.repeat(leftPad)}${text}`;
 }

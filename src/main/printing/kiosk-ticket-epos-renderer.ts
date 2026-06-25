@@ -1,5 +1,9 @@
+import { app, nativeImage } from 'electron';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { PrintConfig } from '../../shared/print-v2';
-import { cut, eposDocument, feed, pulse, separator, text } from './epos-xml-builder';
+import { cut, eposDocument, feed, image, pulse, text } from './epos-xml-builder';
+import { buildSaleTicketLayout } from './kiosk-ticket-layout';
 
 type KioskTicketLine = {
   name: string;
@@ -8,6 +12,7 @@ type KioskTicketLine = {
 };
 
 type RenderKioskTicketInput = {
+  headerTitle?: string | null;
   lines: KioskTicketLine[];
   totalCents: number;
   pagoRecibidoCents: number;
@@ -19,102 +24,121 @@ type RenderKioskTicketInput = {
   config: PrintConfig;
 };
 
-function money(cents: number): string {
-  return new Intl.NumberFormat('es-MX', {
-    style: 'currency',
-    currency: 'MXN',
-    minimumFractionDigits: 0,
-  }).format(cents / 100);
-}
-
 function lineWidth(config: PrintConfig): number {
   return config.epsonPaperWidthMm === 58 ? 32 : 42;
 }
 
-function wrapText(value: string, width: number): string[] {
-  const words = value.trim().split(/\s+/g).filter(Boolean);
-  if (!words.length) return [''];
+type CachedLogo = {
+  filePath: string;
+  fileMtimeMs: number;
+  width: number;
+  height: number;
+  base64Raster: string;
+} | null;
 
-  const lines: string[] = [];
-  let current = '';
+let cachedLogo: CachedLogo = null;
 
-  words.forEach((word) => {
-    const next = current ? `${current} ${word}` : word;
-    if (next.length <= width) {
-      current = next;
-      return;
+function resolveTicketLogoPath(): string | null {
+  const appPath = app.getAppPath();
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, 'assets', 'ticket-logo.png')]
+    : [
+        path.join(appPath, 'assets', 'ticket-logo.png'),
+        path.join(process.cwd(), 'assets', 'ticket-logo.png'),
+      ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+function buildMonochromeRaster(bitmap: Buffer, width: number, height: number): string {
+  const byteWidth = Math.ceil(width / 8);
+  const raster = Buffer.alloc(byteWidth * height, 0x00);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixelIndex = (y * width + x) * 4;
+      const blue = bitmap[pixelIndex] || 0;
+      const green = bitmap[pixelIndex + 1] || 0;
+      const red = bitmap[pixelIndex + 2] || 0;
+      const alpha = bitmap[pixelIndex + 3] || 0;
+      const luminance = 0.299 * red + 0.587 * green + 0.114 * blue;
+      const isDark = alpha > 16 && luminance < 210;
+      if (!isDark) continue;
+      const byteIndex = y * byteWidth + Math.floor(x / 8);
+      raster[byteIndex] |= 0x80 >> (x % 8);
     }
-    if (current) lines.push(current);
-    current = word;
-  });
-
-  if (current) lines.push(current);
-  return lines;
-}
-
-function pair(left: string, right: string, width: number): string {
-  if (left.length + right.length >= width) {
-    return `${left}\n${right}`;
   }
-  return `${left}${' '.repeat(width - left.length - right.length)}${right}`;
+
+  return raster.toString('base64');
 }
 
-function formatDateTimeMx(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('es-MX', {
-    dateStyle: 'short',
-    timeStyle: 'short',
-    hour12: false,
-  }).format(date);
-}
+function getTicketLogo(config: PrintConfig): CachedLogo {
+  const filePath = resolveTicketLogoPath();
+  if (!filePath) return null;
 
-function formatPaymentMethod(value: string): string {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'tarjeta' || normalized === 'card') return 'Tarjeta';
-  if (normalized === 'efectivo' || normalized === 'cash') return 'Efectivo';
-  if (normalized === 'employee') return 'Pago empleado';
-  return normalized ? normalized : 'Efectivo';
+  const stats = fs.statSync(filePath);
+  if (cachedLogo && cachedLogo.filePath === filePath && cachedLogo.fileMtimeMs === stats.mtimeMs) {
+    return cachedLogo;
+  }
+
+  const targetWidth = config.epsonPaperWidthMm === 58 ? 256 : 320;
+  const imageSource = nativeImage.createFromPath(filePath);
+  if (imageSource.isEmpty()) return null;
+
+  const resized = imageSource.resize({ width: targetWidth, quality: 'good' });
+  const size = resized.getSize();
+  const paddedWidth = Math.ceil(size.width / 8) * 8;
+  const finalImage =
+    paddedWidth === size.width ? resized : resized.resize({ width: paddedWidth, height: size.height, quality: 'good' });
+  const finalSize = finalImage.getSize();
+  const base64Raster = buildMonochromeRaster(finalImage.toBitmap(), finalSize.width, finalSize.height);
+
+  cachedLogo = {
+    filePath,
+    fileMtimeMs: stats.mtimeMs,
+    width: finalSize.width,
+    height: finalSize.height,
+    base64Raster,
+  };
+  return cachedLogo;
 }
 
 export function renderKioskTicketEposXml(input: RenderKioskTicketInput): string {
-  const width = lineWidth(input.config);
-  const nodes: string[] = [
-    text('KIOSK POS', { align: 'center', em: true, width: 2, height: 2, smooth: true }),
-    text(input.isReprint ? 'REIMPRESION' : 'Ticket de venta', { align: 'center' }),
-    feed(1),
-    text(`Fecha: ${formatDateTimeMx(input.createdAtIso || new Date().toISOString())}`),
-  ];
+  const layout = buildSaleTicketLayout({
+    headerTitle: input.headerTitle,
+    lines: input.lines,
+    totalCents: input.totalCents,
+    pagoRecibidoCents: input.pagoRecibidoCents,
+    cambioCents: input.cambioCents,
+    metodoPago: input.metodoPago,
+    folioText: input.folioText,
+    createdAtIso: input.createdAtIso,
+    isReprint: input.isReprint,
+    width: lineWidth(input.config),
+  });
+  const nodes: string[] = [text(layout.headerTitle, { align: 'center', em: true, smooth: true })];
+  const logo = getTicketLogo(input.config);
 
-  if (input.folioText) {
-    nodes.push(text(`Folio: ${input.folioText}`, { em: true }));
+  if (logo) {
+    nodes.length = 0;
+    nodes.push(image(logo.base64Raster, { width: logo.width, height: logo.height, align: 'center', mode: 'mono' }));
+    nodes.push(feed(1));
+    nodes.push(text(layout.headerTitle, { align: 'center', em: true, smooth: true }));
   }
 
-  nodes.push(
-    separator(width),
-    text('Cant  Producto'),
-    text(pair('      P.Unit', 'Importe', width)),
-    separator(width),
-  );
+  if (layout.headerSubtitle) {
+    nodes.push(text(layout.headerSubtitle, { align: 'center' }));
+  }
 
-  input.lines.forEach((line) => {
-    const prefix = `${line.qty}x `;
-    const wrappedName = wrapText(line.name, Math.max(10, width - prefix.length));
-    const first = wrappedName.shift() || '';
-    nodes.push(text(`${prefix}${first}`));
-    wrappedName.forEach((chunk) => nodes.push(text(`${' '.repeat(prefix.length)}${chunk}`)));
-    nodes.push(text(pair(`      ${money(line.unitPriceCents)}`, money(line.unitPriceCents * line.qty), width)));
-    nodes.push(feed(1));
+  nodes.push(text(layout.ticketLabel, { align: 'center' }), feed(1));
+  layout.metaLines.forEach((line) => nodes.push(text(line)));
+  layout.columnHeaderLines.forEach((line) => nodes.push(text(line)));
+  layout.itemLines.forEach((line) => nodes.push(text(line)));
+  layout.summaryLines.forEach((line, index) => {
+    nodes.push(text(line, index === 1 ? { em: true } : undefined));
   });
-
-  nodes.push(
-    separator(width),
-    text(pair('TOTAL', money(input.totalCents), width), { em: true }),
-    text(pair('METODO', formatPaymentMethod(input.metodoPago), width)),
-    text(pair('RECIBIDO', money(input.pagoRecibidoCents), width)),
-    text(pair('CAMBIO', money(input.cambioCents), width)),
-    feed(2),
-  );
+  layout.footerLines.forEach((line) => nodes.push(text(line, { align: 'center' })));
+  nodes.push(feed(2));
 
   if (input.config.epsonOpenDrawer) {
     nodes.push(pulse('drawer_1'));
