@@ -43,11 +43,34 @@ interface CatalogSyncApiResponse {
 }
 
 export class CatalogSyncService {
+  private static readonly IMAGE_DOWNLOAD_CONCURRENCY = 6;
+
   constructor(
     private readonly repository: CatalogRepository,
     private readonly ordersRepository: OrdersRepository,
     private readonly userDataPath: string,
   ) {}
+
+  private async mapWithConcurrency<TInput, TOutput>(
+    items: TInput[],
+    concurrency: number,
+    mapper: (item: TInput, index: number) => Promise<TOutput>,
+  ): Promise<TOutput[]> {
+    const results = new Array<TOutput>(items.length);
+    let nextIndex = 0;
+
+    const worker = async (): Promise<void> => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+      }
+    };
+
+    const workerCount = Math.max(1, Math.min(concurrency, items.length));
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return results;
+  }
 
   private getCatalogImagesRoot(): string {
     return path.join(this.userDataPath, 'catalog-images');
@@ -186,13 +209,15 @@ export class CatalogSyncService {
     const activeCategories = (payload.categories || []).filter(
       (row) => row.deleted_at == null && row.is_active !== false,
     );
-    const categories: CatalogCategory[] = await Promise.all(
-      activeCategories.map(async (row) => ({
+    const categories: CatalogCategory[] = await this.mapWithConcurrency(
+      activeCategories,
+      CatalogSyncService.IMAGE_DOWNLOAD_CONCURRENCY,
+      async (row) => ({
         id: row.id,
         name: row.name,
         sortOrder: Number.isFinite(row.sort_order) ? Number(row.sort_order) : 0,
         imagePath: await this.downloadCatalogImage(imageBaseUrl, row.image_path),
-      })),
+      }),
     );
 
     const categoryIds = new Set(categories.map((row) => row.id));
@@ -201,8 +226,10 @@ export class CatalogSyncService {
       (row) => row.deleted_at == null && row.is_active !== false,
     );
     const items: CatalogItem[] = (
-      await Promise.all(
-        activeItems.map(async (row) => ({
+      await this.mapWithConcurrency(
+        activeItems,
+        CatalogSyncService.IMAGE_DOWNLOAD_CONCURRENCY,
+        async (row) => ({
           id: row.id,
           name: row.name,
           type: row.type || 'item',
@@ -210,7 +237,7 @@ export class CatalogSyncService {
           categoryId: row.category_id,
           imagePath: await this.downloadCatalogImage(imageBaseUrl, row.image_path),
           barcode: null,
-        })),
+        }),
       )
     ).filter((item) => categoryIds.has(item.categoryId));
 

@@ -29,13 +29,28 @@ import type { HidScannerSettings, ScanCaptureDebugState, ScanContext, ScannerRea
 function loadRuntimeEnv() {
   const userDataPath = app.getPath('userData');
   const runtimeEnvPath = path.join(userDataPath, 'config.env');
+  const cwd = process.cwd();
+  const appPath = app.getAppPath();
 
-  if (fs.existsSync(runtimeEnvPath)) {
-    dotenv.config({ path: runtimeEnvPath });
+  const candidates = app.isPackaged
+    ? [runtimeEnvPath]
+    : [
+        path.join(cwd, 'config.env'),
+        path.join(appPath, 'config.env'),
+        path.join(cwd, '.env'),
+        path.join(appPath, '.env'),
+        runtimeEnvPath,
+      ];
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const normalized = path.resolve(candidate);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    if (!fs.existsSync(normalized)) continue;
+    dotenv.config({ path: normalized, override: true });
     return;
   }
-
-  dotenv.config();
 }
 
 if (started) {
