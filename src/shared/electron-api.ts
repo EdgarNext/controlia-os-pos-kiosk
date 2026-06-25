@@ -1,5 +1,6 @@
 import type {
   PrintConfig,
+  PrinterConnectionResult,
   PrinterDebugTextOptions,
   PrinterDiagnostics,
   PrintJobRecord,
@@ -70,6 +71,7 @@ export interface PosKioskElectronApi {
   getPrintConfig(): Promise<PrintConfig>;
   setPrintConfig(input: Partial<PrintConfig>): Promise<PrintConfig>;
   printerGetDiagnostics(): Promise<PrinterDiagnostics>;
+  printerTestConnection(): Promise<PrinterConnectionResult>;
   printerPrintSelfTest(input?: { includeDebugFooter?: boolean }): Promise<PrintV2Response>;
   printerPrintText(text: string, options?: PrinterDebugTextOptions): Promise<PrintV2Response>;
   getCatalog(): Promise<CatalogSnapshot>;

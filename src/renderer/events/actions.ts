@@ -74,6 +74,7 @@ export type ActionContext = {
     closePrinterDebug: () => void;
     refreshPrinterDiagnostics: () => Promise<void>;
     savePrinterDebugConfig: () => Promise<void>;
+    printerTestConnection: () => Promise<void>;
     refreshPrintJobs: () => Promise<void>;
     printTest: () => Promise<void>;
     printerSelfTest: () => Promise<void>;
@@ -438,6 +439,11 @@ export const actions: Record<string, (ctx: ActionContext) => Promise<void> | voi
     await ctx.handlers.savePrinterDebugConfig();
     ctx.invalidateMany(['printer-debug', 'status', 'modals']);
     ctx.queueRender('action:printer-debug-save-config');
+  },
+  'printer-debug-test-connection': async (ctx) => {
+    await ctx.handlers.printerTestConnection();
+    ctx.invalidateMany(['printer-debug', 'status', 'modals']);
+    ctx.queueRender('action:printer-debug-test-connection');
   },
   'printer-debug-refresh-jobs': async (ctx) => {
     await ctx.handlers.refreshPrintJobs();

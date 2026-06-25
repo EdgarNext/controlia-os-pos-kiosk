@@ -9,6 +9,7 @@ export type SettingsPendingAction =
   | 'refresh-jobs'
   | 'scanner-debug-save-settings'
   | 'printer-debug-diag'
+  | 'printer-debug-connection'
   | 'printer-debug-self-test'
   | 'printer-debug-text'
   | null;

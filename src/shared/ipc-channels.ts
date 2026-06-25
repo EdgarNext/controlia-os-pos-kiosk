@@ -4,6 +4,7 @@ export const IPC_CHANNELS = {
   PRINT_CONFIG_GET: 'pos:print:config:get',
   PRINT_CONFIG_SET: 'pos:print:config:set',
   PRINTER_GET_DIAGNOSTICS: 'pos:printer:diagnostics:get',
+  PRINTER_TEST_CONNECTION: 'pos:printer:test-connection',
   PRINTER_PRINT_SELF_TEST: 'pos:printer:self-test',
   PRINTER_PRINT_TEXT: 'pos:printer:print-text',
   CATALOG_GET: 'pos:catalog:get',

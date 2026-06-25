@@ -96,14 +96,42 @@ export class SalesService {
       created.folioText,
     );
     try {
-      const queued = this.printService.enqueuePrintV2({
-        rawBase64,
-        jobName: `order_${Date.now()}`,
+      const printResult = await this.printService.printSaleTicket({
+        lines,
+        totalCents,
+        pagoRecibidoCents,
+        cambioCents,
+        metodoPago: input.metodoPago || 'efectivo',
+        folioText: created.folioText,
+        createdAtIso: new Date().toISOString(),
         tenantId: runtime.tenantId,
         kioskId: runtime.kioskId,
         orderId: created.orderId,
+        usbRawBase64: rawBase64,
+        jobName: `order_${Date.now()}`,
       });
-      this.pendingOrderByPrintJobId.set(queued.jobId, created.orderId);
+
+      if (printResult.status === 'QUEUED') {
+        this.pendingOrderByPrintJobId.set(printResult.jobId, created.orderId);
+      } else {
+        this.ordersRepository.recordReprintAttemptAndOutbox({
+          orderId: created.orderId,
+          printStatus: printResult.ok ? 'SENT' : 'FAILED',
+          printJobId: printResult.jobId || null,
+          printError: printResult.error || null,
+        });
+        this.syncCoordinator.notifyPendingWork('auto');
+      }
+
+      return {
+        ok: true,
+        orderId: created.orderId,
+        folioText: created.folioText,
+        totalCents,
+        cambioCents,
+        printStatus: printResult.status,
+        error: printResult.error,
+      };
     } catch (error) {
       try {
         this.ordersRepository.recordReprintAttemptAndOutbox({
@@ -116,16 +144,16 @@ export class SalesService {
         // best effort; sale is already persisted locally
       }
       this.syncCoordinator.notifyPendingWork('auto');
+      return {
+        ok: true,
+        orderId: created.orderId,
+        folioText: created.folioText,
+        totalCents,
+        cambioCents,
+        printStatus: 'FAILED',
+        error: error instanceof Error ? error.message : 'Print queue error',
+      };
     }
-
-    return {
-      ok: true,
-      orderId: created.orderId,
-      folioText: created.folioText,
-      totalCents,
-      cambioCents,
-      printStatus: 'QUEUED',
-    };
   }
 
   listOrderHistory(limit = 50): OrderHistoryRecord[] {
@@ -164,20 +192,40 @@ export class SalesService {
     );
 
     try {
-      const queued = this.printService.enqueuePrintV2({
-        rawBase64,
-        jobName: `reprint_${order.folioText}_${Date.now()}`,
+      const printResult = await this.printService.printSaleTicket({
+        lines: order.lines,
+        totalCents: order.totalCents,
+        pagoRecibidoCents: order.pagoRecibidoCents,
+        cambioCents: order.cambioCents,
+        metodoPago: order.metodoPago,
+        folioText: order.folioText,
+        createdAtIso: order.createdAt,
+        isReprint: true,
         tenantId: order.tenantId,
         kioskId: order.kioskId,
         orderId,
+        usbRawBase64: rawBase64,
+        jobName: `reprint_${order.folioText}_${Date.now()}`,
       });
-      this.pendingOrderByPrintJobId.set(queued.jobId, orderId);
+
+      if (printResult.status === 'QUEUED') {
+        this.pendingOrderByPrintJobId.set(printResult.jobId, orderId);
+      } else {
+        this.ordersRepository.recordReprintAttemptAndOutbox({
+          orderId,
+          printStatus: printResult.ok ? 'SENT' : 'FAILED',
+          printJobId: printResult.jobId || null,
+          printError: printResult.error || null,
+        });
+      }
       this.syncCoordinator.notifyPendingWork('auto');
+
       return {
-        ok: true,
+        ok: printResult.ok || printResult.status === 'QUEUED',
         orderId,
-        printStatus: 'SENT',
-        jobId: queued.jobId,
+        printStatus: printResult.ok ? 'SENT' : printResult.status === 'QUEUED' ? 'SENT' : 'FAILED',
+        jobId: printResult.jobId,
+        error: printResult.error,
       };
     } catch (error) {
       return {

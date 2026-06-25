@@ -20,6 +20,9 @@ const api: PosKioskElectronApi = {
   printerGetDiagnostics() {
     return ipcRenderer.invoke(IPC_CHANNELS.PRINTER_GET_DIAGNOSTICS);
   },
+  printerTestConnection() {
+    return ipcRenderer.invoke(IPC_CHANNELS.PRINTER_TEST_CONNECTION);
+  },
   printerPrintSelfTest(input?: { includeDebugFooter?: boolean }) {
     return ipcRenderer.invoke(IPC_CHANNELS.PRINTER_PRINT_SELF_TEST, input || {});
   },

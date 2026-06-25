@@ -62,6 +62,7 @@ import { getSyncStatusView } from './renderer/selectors/get-sync-status-view';
 import { getTotalsView } from './renderer/selectors/get-totals';
 import type { CatalogCategory, CatalogItem } from './shared/catalog';
 import type { PosSessionView, RuntimeConfig } from './shared/orders';
+import { createDefaultPrintConfig } from './shared/print-v2';
 import type { HidScannerSettings, ScanContextMode, ScannerReading } from './shared/scanner';
 
 interface CartLine extends CartLineView {
@@ -178,6 +179,7 @@ let bootSession = 0;
 const RENDER_PROFILE_REPORT_EVERY = 50;
 const RENDER_PROFILE_WARN_MS = 16;
 const RENDER_PROFILE_SLOW_MS = 33;
+const brokenCategoryImagePaths = new Set<string>();
 
 function isRenderProfilingEnabled(): boolean {
   const viteEnv = (import.meta as ImportMeta & { env?: Record<string, unknown> }).env;
@@ -290,6 +292,28 @@ function getCategoryIconByName(categoryName: string): string {
   return iconCategory();
 }
 
+function shouldRenderCategoryImage(category: CatalogCategory): boolean {
+  return Boolean(category.imagePath && !brokenCategoryImagePaths.has(category.imagePath));
+}
+
+function renderCategoryMedia(category: CatalogCategory): string {
+  if (shouldRenderCategoryImage(category)) {
+    return `
+      <span class="category-thumb">
+        <img
+          src="${escapeHtml(category.imagePath || '')}"
+          alt="${escapeHtml(category.name)}"
+          loading="lazy"
+          data-category-image="1"
+          data-image-path="${escapeHtml(category.imagePath || '')}"
+        />
+      </span>
+    `;
+  }
+
+  return `<span class="category-thumb category-thumb-fallback" aria-hidden="true">${getCategoryIconByName(category.name)}</span>`;
+}
+
 function formatTenantLabel(value: string | null | undefined): string {
   const raw = String(value || '').trim();
   if (!raw) return 'Controlia';
@@ -298,6 +322,13 @@ function formatTenantLabel(value: string | null | undefined): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
+}
+
+function ensurePrintConfigMutable() {
+  if (!state.printConfig) {
+    state.printConfig = createDefaultPrintConfig();
+  }
+  return state.printConfig;
 }
 
 function hasBlockingGate(): boolean {
@@ -1580,7 +1611,7 @@ function flushRender(): void {
             return `
       <button class="category-btn category-nav-btn ${category.id === state.activeCategoryId ? 'active' : ''}" data-action="select-category" data-id="${category.id}">
         <span class="category-btn-content">
-          <span class="category-icon" aria-hidden="true">${getCategoryIconByName(category.name)}</span>
+          ${renderCategoryMedia(category)}
           <span class="category-label">${escapeHtml(category.name)}</span>
         </span>
       </button>
@@ -1945,7 +1976,6 @@ function flushRender(): void {
   `
     : '';
 
-  const settingsConfig = state.printConfig || { linuxPrinterDevicePath: '/dev/pos58', windowsPrinterShare: '' };
   const runtime = state.runtimeConfig || resolveRuntimeConfigDefaults();
 
   const settingsHtml = state.settingsOpen
@@ -2590,9 +2620,9 @@ function flushRender(): void {
     : '';
 
   const printerDiag = state.printerDiagnostics;
-  const linuxStateSummary = printerDiag
-    ? `configured=${printerDiag.configuredDevicePath} · resolved=${printerDiag.resolvedDevicePath || 'none'}`
-    : 'Sin diagnostico cargado.';
+  const printerConfig = state.printConfig || createDefaultPrintConfig();
+  const isEpsonBackend = printerConfig.backend === 'epson_epos_ethernet';
+  const printerSummary = printerDiag?.summary || 'Sin diagnostico cargado.';
   const printerUsbRows = printerDiag?.usbLpDevices?.length
     ? printerDiag.usbLpDevices
         .map(
@@ -2610,6 +2640,9 @@ function flushRender(): void {
         .join('')
     : '<tr><td colspan="6">No se detectaron /dev/usb/lp*</td></tr>';
   const printerNotes = printerDiag?.notes?.length ? printerDiag.notes.map((note) => `- ${note}`).join('\n') : 'Sin notas.';
+  const epsonStatusSummary = printerDiag?.epsonLastStatus
+    ? `${printerDiag.epsonLastStatus.label} · ${printerDiag.epsonLastStatus.message}`
+    : 'Sin prueba de conexion reciente.';
   const printerDebugView = getPrinterDebugView(state);
   const printerLogs = printerDebugView.logsJoined;
   const printerJobsHtml = state.printJobs.length
@@ -2637,7 +2670,7 @@ function flushRender(): void {
             ${
               state.printerDebugLoading
                 ? 'Cargando diagnostico...'
-                : escapeHtml(linuxStateSummary)
+                : escapeHtml(printerSummary)
             }
           </div>
         </div>
@@ -2646,19 +2679,87 @@ function flushRender(): void {
         <div class="settings-section-title">Printer settings</div>
         <div class="printer-debug-settings-grid">
           <label class="field">
+            <span>Backend</span>
+            <select id="printer-debug-backend" class="input">
+              <option value="epson_epos_ethernet" ${printerConfig.backend === 'epson_epos_ethernet' ? 'selected' : ''}>Epson Ethernet (ePOS)</option>
+              <option value="usb_escpos" ${printerConfig.backend === 'usb_escpos' ? 'selected' : ''}>USB ESC/POS</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Epson host / IP</span>
+            <input id="printer-debug-epson-host" class="input" value="${escapeHtml(printerConfig.epsonHost)}" />
+          </label>
+          <label class="field">
+            <span>Epson port</span>
+            <input id="printer-debug-epson-port" class="input" inputmode="numeric" value="${escapeHtml(String(printerConfig.epsonPort))}" />
+          </label>
+          <label class="field">
+            <span>Epson device ID</span>
+            <input id="printer-debug-epson-device-id" class="input" value="${escapeHtml(printerConfig.epsonDeviceId)}" />
+          </label>
+          <label class="field">
+            <span>Epson timeout (ms)</span>
+            <input id="printer-debug-epson-timeout-ms" class="input" inputmode="numeric" value="${escapeHtml(String(printerConfig.epsonTimeoutMs))}" />
+          </label>
+          <label class="field">
+            <span>Epson paper width</span>
+            <select id="printer-debug-epson-paper-width" class="input">
+              <option value="80" ${printerConfig.epsonPaperWidthMm === 80 ? 'selected' : ''}>80 mm</option>
+              <option value="58" ${printerConfig.epsonPaperWidthMm === 58 ? 'selected' : ''}>58 mm</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Epson copies</span>
+            <input id="printer-debug-epson-copies" class="input" inputmode="numeric" value="${escapeHtml(String(printerConfig.epsonCopies))}" />
+          </label>
+          <label class="field">
             <span>Linux printer device path</span>
             <input id="printer-debug-device-path" class="input" value="${escapeHtml(
-              state.printConfig?.linuxPrinterDevicePath || '/dev/pos58',
+              printerConfig.linuxPrinterDevicePath,
             )}" />
           </label>
           <label class="field">
             <span>Windows printer share</span>
-            <input id="printer-debug-windows-printer" class="input" value="${escapeHtml(settingsConfig.windowsPrinterShare)}" />
+            <input id="printer-debug-windows-printer" class="input" value="${escapeHtml(printerConfig.windowsPrinterShare)}" />
+          </label>
+        </div>
+        <div class="settings-actions">
+          <label class="field" style="min-width: 160px;">
+            <span style="display:flex; align-items:center; gap:8px;">
+              <input id="printer-debug-epson-use-https" type="checkbox" ${printerConfig.epsonUseHttps ? 'checked' : ''} />
+              Epson HTTPS
+            </span>
+          </label>
+          <label class="field" style="min-width: 160px;">
+            <span style="display:flex; align-items:center; gap:8px;">
+              <input id="printer-debug-epson-cut" type="checkbox" ${printerConfig.epsonCut ? 'checked' : ''} />
+              Corte automatico
+            </span>
+          </label>
+          <label class="field" style="min-width: 160px;">
+            <span style="display:flex; align-items:center; gap:8px;">
+              <input id="printer-debug-epson-open-drawer" type="checkbox" ${printerConfig.epsonOpenDrawer ? 'checked' : ''} />
+              Abrir cajon
+            </span>
           </label>
         </div>
         <div class="settings-actions">
           <button class="button secondary" data-action="printer-debug-save-config" ${state.busy ? 'disabled' : ''}>Guardar settings</button>
+          <button class="button secondary" data-action="printer-debug-test-connection" ${state.busy ? 'disabled' : ''}>Probar conexion Epson</button>
         </div>
+        ${
+          isEpsonBackend
+            ? `
+        <label class="field">
+          <span>Estado Epson</span>
+          <textarea class="input scanner-debug-logs" rows="3" readonly>${escapeHtml(epsonStatusSummary)}</textarea>
+        </label>
+        <label class="field">
+          <span>Endpoint Epson</span>
+          <textarea class="input scanner-debug-logs" rows="2" readonly>${escapeHtml(printerDiag?.epsonEndpoint || 'n/a')}</textarea>
+        </label>
+        `
+            : `
         <div class="jobs-table-wrap history-table-wrap">
           <table class="jobs-table">
             <thead>
@@ -2696,6 +2797,18 @@ function flushRender(): void {
           <span>Notas diagnostico</span>
           <textarea class="input scanner-debug-logs" rows="4" readonly>${escapeHtml(printerNotes)}</textarea>
         </label>
+        `
+        }
+        ${
+          isEpsonBackend
+            ? `
+        <label class="field">
+          <span>Notas diagnostico</span>
+          <textarea class="input scanner-debug-logs" rows="4" readonly>${escapeHtml(printerNotes)}</textarea>
+        </label>
+        `
+            : ''
+        }
         <label class="field">
           <span>Print custom text</span>
           <textarea id="printer-debug-custom-text" class="input scanner-debug-logs" rows="4" placeholder="Texto personalizado para imprimir">${escapeHtml(
@@ -3356,25 +3469,59 @@ async function printerSelfTest(): Promise<void> {
 }
 
 async function savePrinterDebugConfig(): Promise<void> {
-  if (!state.printConfig || state.busy) return;
+  const printConfig = ensurePrintConfigMutable();
+  if (state.busy) return;
   state.busy = true;
   state.settingsPendingAction = 'save';
   bumpUiVersion();
   render();
   try {
-    state.printConfig = await window.posKiosk.setPrintConfig(state.printConfig);
+    state.printConfig = await window.posKiosk.setPrintConfig(printConfig);
     bumpPrinterVersion();
-    pushPrinterDebugLog(`Saved linux_printer_device_path=${state.printConfig.linuxPrinterDevicePath}`);
-    setStatus('Printer device path guardado.', 'success');
+    pushPrinterDebugLog(`Saved printer backend=${state.printConfig.backend}`);
+    setStatus('Configuracion de impresora guardada.', 'success');
     await refreshPrinterDiagnostics();
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'No se pudo guardar printer device path.';
+    const message = error instanceof Error ? error.message : 'No se pudo guardar configuracion de impresora.';
     pushPrinterDebugLog(`Save config failed: ${message}`);
     setStatus(message, 'error');
   } finally {
     state.busy = false;
     state.settingsPendingAction = null;
     bumpUiVersion();
+    render();
+  }
+}
+
+async function printerTestConnection(): Promise<void> {
+  if (state.busy) return;
+  state.busy = true;
+  state.settingsPendingAction = 'printer-debug-connection';
+  state.statusBar.print.phase = 'working';
+  state.statusBar.print.lastErrorShort = '';
+  bumpUiVersion();
+  bumpPrinterVersion();
+  render();
+  try {
+    const result = await window.posKiosk.printerTestConnection();
+    pushPrinterDebugLog(`Connection test: ${result.ok ? 'ok' : 'failed'} ${result.message}`);
+    state.statusBar.print.phase = result.ok ? 'ok' : 'error';
+    state.statusBar.print.lastErrorShort = result.ok ? '' : result.message;
+    bumpUiVersion();
+    setStatus(result.message, result.ok ? 'success' : 'error');
+    await refreshPrinterDiagnostics();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'No se pudo probar la conexion de impresora.';
+    state.statusBar.print.phase = 'error';
+    state.statusBar.print.lastErrorShort = message;
+    bumpUiVersion();
+    pushPrinterDebugLog(`Connection test failed: ${message}`);
+    setStatus(message, 'error');
+  } finally {
+    state.busy = false;
+    state.settingsPendingAction = null;
+    bumpUiVersion();
+    bumpPrinterVersion();
     render();
   }
 }
@@ -3606,6 +3753,7 @@ async function handleScanReading(reading: ScannerReading): Promise<void> {
 
 async function loadCatalogFromLocal(): Promise<void> {
   state.snapshot = await window.posKiosk.getCatalog();
+  brokenCategoryImagePaths.clear();
   bumpCatalogVersion();
   ensureActiveCategory();
 }
@@ -4961,13 +5109,33 @@ const handleAppInput = (event: Event): void => {
   }
 
   const runtime = ensureRuntimeConfigMutable();
-  if (!state.printConfig) state.printConfig = { linuxPrinterDevicePath: '/dev/pos58', windowsPrinterShare: '' };
+  const printConfig = ensurePrintConfigMutable();
   if (id === 'settings-linux-printer-device-path' || id === 'printer-debug-device-path') {
-    state.printConfig.linuxPrinterDevicePath = target.value;
+    printConfig.linuxPrinterDevicePath = target.value;
     bumpPrinterVersion();
   }
   else if (id === 'settings-windows-printer' || id === 'printer-debug-windows-printer') {
-    state.printConfig.windowsPrinterShare = target.value;
+    printConfig.windowsPrinterShare = target.value;
+    bumpPrinterVersion();
+  }
+  else if (id === 'printer-debug-epson-host') {
+    printConfig.epsonHost = target.value;
+    bumpPrinterVersion();
+  }
+  else if (id === 'printer-debug-epson-port') {
+    printConfig.epsonPort = Number.parseInt(target.value, 10) || 80;
+    bumpPrinterVersion();
+  }
+  else if (id === 'printer-debug-epson-device-id') {
+    printConfig.epsonDeviceId = target.value;
+    bumpPrinterVersion();
+  }
+  else if (id === 'printer-debug-epson-timeout-ms') {
+    printConfig.epsonTimeoutMs = Number.parseInt(target.value, 10) || 10000;
+    bumpPrinterVersion();
+  }
+  else if (id === 'printer-debug-epson-copies') {
+    printConfig.epsonCopies = Number.parseInt(target.value, 10) || 1;
     bumpPrinterVersion();
   }
   else if (id === 'settings-scanner-min-len') {
@@ -5028,6 +5196,16 @@ const handleAppChange = (event: Event): void => {
     bumpRuntimeVersion();
     return;
   }
+  if (id === 'printer-debug-backend') {
+    ensurePrintConfigMutable().backend = target.value === 'usb_escpos' ? 'usb_escpos' : 'epson_epos_ethernet';
+    bumpPrinterVersion();
+    return;
+  }
+  if (id === 'printer-debug-epson-paper-width') {
+    ensurePrintConfigMutable().epsonPaperWidthMm = target.value === '58' ? 58 : 80;
+    bumpPrinterVersion();
+    return;
+  }
   if (id === 'device-touch-screen-enabled' && target instanceof HTMLInputElement) {
     const runtime = ensureRuntimeConfigMutable();
     runtime.touchScreenEnabled = target.checked;
@@ -5066,6 +5244,21 @@ const handleAppChange = (event: Event): void => {
   }
   if (id === 'printer-debug-include-footer' && target instanceof HTMLInputElement) {
     state.printerDebugIncludeFooter = target.checked;
+    bumpPrinterVersion();
+    return;
+  }
+  if (id === 'printer-debug-epson-use-https' && target instanceof HTMLInputElement) {
+    ensurePrintConfigMutable().epsonUseHttps = target.checked;
+    bumpPrinterVersion();
+    return;
+  }
+  if (id === 'printer-debug-epson-cut' && target instanceof HTMLInputElement) {
+    ensurePrintConfigMutable().epsonCut = target.checked;
+    bumpPrinterVersion();
+    return;
+  }
+  if (id === 'printer-debug-epson-open-drawer' && target instanceof HTMLInputElement) {
+    ensurePrintConfigMutable().epsonOpenDrawer = target.checked;
     bumpPrinterVersion();
   }
 };
@@ -5281,6 +5474,7 @@ const handleAppClick = async (event: Event): Promise<void> => {
       closePrinterDebug,
       refreshPrinterDiagnostics,
       savePrinterDebugConfig,
+      printerTestConnection,
       refreshPrintJobs,
       printTest,
       printerSelfTest,
@@ -5389,6 +5583,17 @@ const handleDocumentKeydown = (event: KeyboardEvent): void => {
   }
 };
 
+const handleAppMediaError = (event: Event): void => {
+  const target = event.target;
+  if (!(target instanceof HTMLImageElement)) return;
+  if (!target.dataset.categoryImage) return;
+  const imagePath = target.dataset.imagePath || '';
+  if (!imagePath || brokenCategoryImagePaths.has(imagePath)) return;
+  brokenCategoryImagePaths.add(imagePath);
+  bumpCatalogVersion();
+  queueRender('category-image-error', ['catalog']);
+};
+
 function bindDomEventListeners(): void {
   app.addEventListener('input', handleAppInput);
   registerCleanup(() => app.removeEventListener('input', handleAppInput));
@@ -5401,6 +5606,9 @@ function bindDomEventListeners(): void {
 
   app.addEventListener('click', handleAppClick);
   registerCleanup(() => app.removeEventListener('click', handleAppClick));
+
+  app.addEventListener('error', handleAppMediaError, true);
+  registerCleanup(() => app.removeEventListener('error', handleAppMediaError, true));
 
   document.addEventListener('focusin', handleDocumentFocusIn);
   registerCleanup(() => document.removeEventListener('focusin', handleDocumentFocusIn));

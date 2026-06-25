@@ -40,6 +40,67 @@ ELECTRON_OPEN_DEVTOOLS=0
 
 - Do not ship secrets inside the packaged app.
 - Operators can update `config.env` without rebuilding the installer.
+- `config.env` is only the startup fallback. Active printer settings are persisted locally in SQLite `app_settings` from the app UI.
+
+## Printer Backends
+
+`pos-kiosk` supports two printer backends:
+
+- `epson_epos_ethernet`: Epson ePOS-Print over Ethernet.
+- `usb_escpos`: direct ESC/POS raw printing over Linux USB device or Windows printer share.
+
+Default behavior:
+
+- New installations or databases without previous printer config default to `epson_epos_ethernet`.
+- Existing installations that already had legacy USB-only config keep `usb_escpos` to avoid breaking current operation.
+
+## Epson Ethernet Setup
+
+Use `Printer Debug / Testing` to configure Epson network printing.
+
+Fields:
+
+- `Backend / Mode`: select `Epson Ethernet (ePOS)`.
+- `Host / IP`: printer IP or hostname.
+- `Port`: default `80`.
+- `Use HTTPS`: normally `No` unless your Epson model is configured for TLS.
+- `Device ID`: default `local_printer`.
+- `Timeout (ms)`: request timeout for Epson status/print calls.
+- `Paper width (mm)`: receipt width for XML layout.
+- `Copies`: number of copies for test/debug text output.
+- `Cut paper`: sends cut command at the end of the ticket.
+- `Open drawer`: sends cash drawer pulse when supported and enabled.
+
+Recommended baseline:
+
+```txt
+Backend: Epson Ethernet (ePOS)
+Host / IP: <printer-ip>
+Port: 80
+Use HTTPS: No
+Device ID: local_printer
+Timeout (ms): 10000
+Paper width (mm): 80
+Copies: 1
+Cut paper: Yes
+Open drawer: No
+```
+
+### Epson in-app testing
+
+From `Printer Debug / Testing`:
+
+- Save the printer config.
+- Run `Test Connection` to query Epson printer status over the network.
+- Run `Print Self-Test` to send a minimal Epson receipt through ePOS XML.
+- Optionally run `Print custom text` for additional debug output.
+
+If `Test Connection` fails:
+
+- confirm the printer and kiosk are on the same network;
+- confirm the IP/hostname is reachable;
+- confirm the Epson model exposes ePOS-Print and the selected `Device ID` matches the printer configuration;
+- switch `Use HTTPS` only if your device is explicitly configured for it.
 
 ## Linux Direct Printing Setup
 

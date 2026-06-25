@@ -163,6 +163,8 @@ export async function getLinuxPrinterDiagnostics(configuredPathRaw: string | nul
   }
 
   return {
+    backend: 'usb_escpos',
+    summary: `backend=usb_escpos · configured=${configuredPath} · resolved=${resolvedDevicePath || 'none'}`,
     platform: process.platform,
     configuredDevicePath: configuredPath,
     resolvedDevicePath,
@@ -172,6 +174,13 @@ export async function getLinuxPrinterDiagnostics(configuredPathRaw: string | nul
     currentGroups: groupNames,
     pos58,
     usbLpDevices,
+    epsonEndpoint: null,
+    epsonHost: null,
+    epsonPort: null,
+    epsonUseHttps: false,
+    epsonDeviceId: null,
+    epsonTimeoutMs: null,
+    epsonLastStatus: null,
     notes,
   };
 }

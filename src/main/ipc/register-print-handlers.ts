@@ -2,6 +2,7 @@ import { ipcMain } from 'electron';
 import { IPC_CHANNELS } from '../../shared/ipc-channels';
 import type {
   PrintConfig,
+  PrinterConnectionResult,
   PrinterDebugTextOptions,
   PrinterDiagnostics,
   PrintV2Request,
@@ -35,6 +36,10 @@ export function registerPrintHandlers(printService: PrintService): void {
 
   ipcMain.handle(IPC_CHANNELS.PRINTER_GET_DIAGNOSTICS, async (): Promise<PrinterDiagnostics> => {
     return printService.getPrinterDiagnostics();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.PRINTER_TEST_CONNECTION, async (): Promise<PrinterConnectionResult> => {
+    return printService.printerTestConnection();
   });
 
   ipcMain.handle(

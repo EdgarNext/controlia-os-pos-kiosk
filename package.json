@@ -1,7 +1,7 @@
 {
   "name": "pos-kiosk",
   "productName": "pos-kiosk",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Point of Sale - offline",
   "main": ".vite/build/main.js",
   "private": true,
