@@ -18,6 +18,18 @@ Load order:
 
 `pos-kiosk` comes from Electron `app.getName()` for this app.
 
+## Window mode and app icon
+
+- La ventana principal abre en fullscreen por default.
+- `F11` alterna entre fullscreen y windowed sin bloquear el cierre de la app.
+- El set final de iconos debe colocarse en [assets/README.md](/home/developer/dev/controlia-os/apps/edge/pos-kiosk/assets/README.md).
+
+Archivos esperados:
+
+- `assets/icon.png`
+- `assets/icon.ico`
+- `assets/icon.icns`
+
 ### Environment variables used by `pos-kiosk`
 
 - `POS_SYNC_API_BASE_URL`

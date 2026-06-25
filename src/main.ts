@@ -60,6 +60,30 @@ let mainWindow: BrowserWindow | null = null;
 let ordersRepositoryRef: OrdersRepository | null = null;
 let syncCoordinatorRef: SyncCoordinator | null = null;
 
+function resolveWindowIconPath(): string | undefined {
+  const candidates = app.isPackaged
+    ? [
+        path.join(process.resourcesPath, 'assets', 'icon.png'),
+        path.join(process.resourcesPath, 'assets', 'icon.ico'),
+      ]
+    : [
+        path.join(app.getAppPath(), 'assets', 'icon.png'),
+        path.join(app.getAppPath(), 'assets', 'icon.ico'),
+        path.join(app.getAppPath(), 'src', 'assets', 'controlia-mark.svg'),
+      ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate));
+}
+
+function bindWindowShortcuts(win: BrowserWindow): void {
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    if (input.code !== 'F11' && input.key !== 'F11') return;
+    event.preventDefault();
+    win.setFullScreen(!win.isFullScreen());
+  });
+}
+
 function registerPosMediaProtocol(userDataPath: string): void {
   const root = path.join(userDataPath, 'catalog-images');
   void protocol.handle('pos-media', async (request) => {
@@ -112,16 +136,20 @@ function safeDestroyScanCapture(): void {
 }
 
 const createWindow = (): BrowserWindow => {
+  const windowIcon = resolveWindowIconPath();
   const win = new BrowserWindow({
     width: 800,
     height: 600,
-    fullscreen: false,
+    show: false,
+    fullscreen: true,
+    icon: windowIcon,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
+  bindWindowShortcuts(win);
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     win.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
@@ -133,8 +161,14 @@ const createWindow = (): BrowserWindow => {
     win.webContents.openDevTools();
   }
 
-  // Open maximized by default, but keep standard windowed mode (not fullscreen).
-  win.maximize();
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) {
+      if (!win.isFullScreen()) {
+        win.setFullScreen(true);
+      }
+      win.show();
+    }
+  });
 
   win.on('closed', () => {
     if (mainWindow === win) {

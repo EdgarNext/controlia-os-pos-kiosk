@@ -669,7 +669,8 @@ body {
 .category-thumb {
   width: 40px;
   height: 40px;
-  border-radius: 12px;
+  padding: 6px;
+  border-radius: 10px;
   overflow: hidden;
   flex: 0 0 auto;
   display: inline-flex;
@@ -684,6 +685,7 @@ body {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  object-position: center;
   display: block;
 }
 
@@ -692,8 +694,8 @@ body {
 }
 
 .category-thumb-fallback svg {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
 }
 
 .category-label {
@@ -824,16 +826,21 @@ body {
 .product-image-wrapper {
   width: 100%;
   aspect-ratio: 4 / 3;
-  background: color-mix(in srgb, var(--color-surface-2) 85%, black);
+  padding: 10px;
+  background: color-mix(in srgb, var(--color-surface-1) 88%, var(--color-border) 12%);
   overflow: hidden;
   position: relative;
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .product-image-wrapper img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  object-position: center;
   display: block;
 }
 
@@ -856,10 +863,36 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-direction: column;
+  gap: 8px;
   color: var(--color-text-muted);
   font-size: 12px;
   letter-spacing: 0.02em;
-  background: color-mix(in srgb, var(--color-surface-2) 82%, black);
+  text-align: center;
+  border-radius: calc(var(--radius-lg) - 6px);
+  background: color-mix(in srgb, var(--color-surface-2) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  padding: 12px;
+}
+
+.product-image-placeholder-icon {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--color-text-muted) 82%, var(--color-text) 18%);
+}
+
+.product-image-placeholder-icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+.product-image-placeholder-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .product-image-overlay {
@@ -868,7 +901,7 @@ body {
   height: 40%;
   background: linear-gradient(
     to top,
-    color-mix(in srgb, var(--brand) 24%, rgba(0, 0, 0, 0.22)),
+    color-mix(in srgb, var(--brand) 16%, rgba(0, 0, 0, 0.12)),
     transparent
   );
   pointer-events: none;

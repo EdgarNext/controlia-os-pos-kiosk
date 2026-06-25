@@ -7,10 +7,22 @@ import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-nati
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const appRoot = __dirname;
+const iconBasePath = path.join(appRoot, 'assets', 'icon');
+const iconPngPath = `${iconBasePath}.png`;
+const iconIcoPath = `${iconBasePath}.ico`;
+const iconIcnsPath = `${iconBasePath}.icns`;
+const hasAnyPackagedIcon = [iconPngPath, iconIcoPath, iconIcnsPath].some((filePath) => fs.existsSync(filePath));
+const extraResourcePaths = fs.existsSync(path.join(appRoot, 'assets')) ? [path.join(appRoot, 'assets')] : [];
 
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    icon: hasAnyPackagedIcon ? iconBasePath : undefined,
+    extraResource: extraResourcePaths,
     ignore: (file: string) => {
       if (!file) return false;
       return !(file.startsWith('/.vite') || file.startsWith('/node_modules') || file === '/package.json');
@@ -18,10 +30,20 @@ const config: ForgeConfig = {
   },
   rebuildConfig: {},
   makers: [
-    new MakerSquirrel({}),
+    new MakerSquirrel({
+      ...(fs.existsSync(iconIcoPath) ? { setupIcon: iconIcoPath } : {}),
+    }),
     new MakerZIP({}, ['darwin']),
     //new MakerRpm({}),
-    new MakerDeb({}),
+    new MakerDeb({
+      ...(fs.existsSync(iconPngPath)
+        ? {
+            options: {
+              icon: iconPngPath,
+            },
+          }
+        : {}),
+    }),
   ],
    publishers: [
     {

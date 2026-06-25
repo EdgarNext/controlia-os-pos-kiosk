@@ -180,6 +180,7 @@ const RENDER_PROFILE_REPORT_EVERY = 50;
 const RENDER_PROFILE_WARN_MS = 16;
 const RENDER_PROFILE_SLOW_MS = 33;
 const brokenCategoryImagePaths = new Set<string>();
+const brokenProductImagePaths = new Set<string>();
 
 function isRenderProfilingEnabled(): boolean {
   const viteEnv = (import.meta as ImportMeta & { env?: Record<string, unknown> }).env;
@@ -312,6 +313,31 @@ function renderCategoryMedia(category: CatalogCategory): string {
   }
 
   return `<span class="category-thumb category-thumb-fallback" aria-hidden="true">${getCategoryIconByName(category.name)}</span>`;
+}
+
+function shouldRenderProductImage(item: CatalogItem): boolean {
+  return Boolean(item.imagePath && !brokenProductImagePaths.has(item.imagePath));
+}
+
+function renderProductMedia(item: CatalogItem): string {
+  if (shouldRenderProductImage(item)) {
+    return `
+      <img
+        src="${escapeHtml(item.imagePath || '')}"
+        alt="${escapeHtml(item.name)}"
+        loading="lazy"
+        data-product-image="1"
+        data-image-path="${escapeHtml(item.imagePath || '')}"
+      />
+    `;
+  }
+
+  return `
+    <div class="product-image-placeholder" aria-hidden="true">
+      <span class="product-image-placeholder-icon">${getCategoryIconByName(item.name)}</span>
+      <span class="product-image-placeholder-label">Sin imagen</span>
+    </div>
+  `;
 }
 
 function formatTenantLabel(value: string | null | undefined): string {
@@ -1627,11 +1653,7 @@ function flushRender(): void {
           (item) => `
       <button class="product-card" data-action="add-to-cart" data-id="${item.id}">
         <div class="product-image-wrapper ${item.imagePath ? '' : 'is-placeholder'}">
-          ${
-            item.imagePath
-              ? `<img src="${escapeHtml(item.imagePath)}" alt="${escapeHtml(item.name)}" loading="lazy" />`
-              : '<div class="product-image-placeholder">Sin imagen</div>'
-          }
+          ${renderProductMedia(item)}
           <div class="product-image-overlay"></div>
           <span class="product-add-ghost" aria-hidden="true">+</span>
           <div class="product-price-badge">${formatMoney(item.priceCents)}</div>
@@ -3754,6 +3776,7 @@ async function handleScanReading(reading: ScannerReading): Promise<void> {
 async function loadCatalogFromLocal(): Promise<void> {
   state.snapshot = await window.posKiosk.getCatalog();
   brokenCategoryImagePaths.clear();
+  brokenProductImagePaths.clear();
   bumpCatalogVersion();
   ensureActiveCategory();
 }
@@ -5586,12 +5609,18 @@ const handleDocumentKeydown = (event: KeyboardEvent): void => {
 const handleAppMediaError = (event: Event): void => {
   const target = event.target;
   if (!(target instanceof HTMLImageElement)) return;
-  if (!target.dataset.categoryImage) return;
   const imagePath = target.dataset.imagePath || '';
-  if (!imagePath || brokenCategoryImagePaths.has(imagePath)) return;
-  brokenCategoryImagePaths.add(imagePath);
+  if (target.dataset.categoryImage) {
+    if (!imagePath || brokenCategoryImagePaths.has(imagePath)) return;
+    brokenCategoryImagePaths.add(imagePath);
+  } else if (target.dataset.productImage) {
+    if (!imagePath || brokenProductImagePaths.has(imagePath)) return;
+    brokenProductImagePaths.add(imagePath);
+  } else {
+    return;
+  }
   bumpCatalogVersion();
-  queueRender('category-image-error', ['catalog']);
+  queueRender('catalog-image-error', ['catalog']);
 };
 
 function bindDomEventListeners(): void {
